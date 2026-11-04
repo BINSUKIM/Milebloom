@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 디버그 빌드에만 합쳐지는 검증 하니스 (세션 2·3-B). 제출용(release) APK에는 들어가지 않는다.
+     코드: src/debug/java/.../VerifyActivity.kt · BootReceiver.kt · RecordService.kt -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- VerifyActivity가 확인하는 미사용 도메인 (EvBattery · Seat · CarInfo · Safety) -->
+    <uses-permission android:name="pleos.car.permission.CAR_ENERGY" />
+    <uses-permission android:name="pleos.car.permission.CAR_CLIMATE" />
+    <uses-permission android:name="pleos.car.permission.CAR_INFO" />
+    <uses-permission android:name="pleos.car.permission.CAR_SAFETY" />
+    <uses-permission android:name="pleos.car.permission.CAR_SEATS" />
+    <uses-permission android:name="android.car.permission.CAR_INFO" />
+    <!-- 속도(정차 판별) 검증 — dangerous 런타임 권한 -->
+    <uses-permission android:name="android.car.permission.CAR_SPEED" />
+
+    <!-- 백그라운드 기록 검증 (#29) — D-046으로 핵심 기능에서 제외 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application>
+        <!-- 실행: adb shell am start -n com.milebloom.app/.VerifyActivity -->
+        <activity
+            android:name=".VerifyActivity"
+            android:exported="true" />
+
+        <!-- 다시 쓰려면 아래 두 곳의 enabled를 true로 -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="false"
+            android:directBootAware="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.USER_UNLOCKED" />
+                <action android:name="com.milebloom.app.SET_TRY_LAUNCH" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".RecordService"
+            android:enabled="false"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Records in-vehicle driving signals (gear, wiper, headlamp, odometer) while the app UI is closed" />
+        </service>
+    </application>
+
+</manifest>

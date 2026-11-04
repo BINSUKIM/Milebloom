@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 제출용 권한 — Milebloom이 실제로 쓰는 것만 둔다 (세션 5-A).
+         근거: Vehicle SDK 각 Impl의 @RequiresCustomPermission
+           CAR_DOORS     도어 개폐
+           CAR_WINDOWS   창문 개도 · 와이퍼
+           CAR_DRIVE     누적 주행거리 · 조향각 · 브레이크
+           CAR_LIGHTS    헤드램프 · 앰비언트 읽기
+           CONTROL_CAR_LIGHTS  앰비언트 색 쓰기 (배포 시 App Market 심사 승인 필요 — D-047)
+         검증 하니스용 권한(CAR_ENERGY·CAR_SEATS·CAR_CLIMATE·CAR_INFO·CAR_SAFETY·부팅·포그라운드 서비스·알림)은
+         src/debug/AndroidManifest.xml로 옮겼다. 연비·EV 전비·좌석 착좌는 쓰지 않는다 (D-038). -->
+    <uses-permission android:name="pleos.car.permission.CAR_DOORS" />
+    <uses-permission android:name="pleos.car.permission.CAR_WINDOWS" />
+    <uses-permission android:name="pleos.car.permission.CAR_DRIVE" />
+    <uses-permission android:name="pleos.car.permission.CAR_LIGHTS" />
+    <uses-permission android:name="pleos.car.permission.CONTROL_CAR_LIGHTS" />
+    <!-- P 지점 좌표 1회 조회. 런타임 권한 (CAR_SPEED와 함께 첫 실행 P에서 묻는다) -->
+    <uses-permission android:name="pleos.car.permission.FUSED_LOCATION" />
+    <uses-permission android:name="pleos.car.permission.STT_SERVICE" />
+    <uses-permission android:name="pleos.car.permission.TTS_SERVICE" />
+
+    <!-- AAOS GEAR_SELECTION (D-014) -->
+    <uses-permission android:name="android.car.permission.CAR_POWERTRAIN" />
+
+    <!-- AAOS PERF_VEHICLE_SPEED — 정차 판별에만 쓰고 저장하지 않는다 (D-061). 런타임 권한, 대화상자는 '위치 정보'로 표시됨 -->
+    <uses-permission android:name="android.car.permission.CAR_SPEED" />
+
+    <application
+        android:name=".MilebloomApp"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Hyundai_Pleos_Project">
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|uiMode"
+            android:exported="true">
+            <!-- 주행 중 표시 선언 (AAOS Distraction Optimization). 없으면 D에서 플랫폼이
+                 "주행 중에는 사용할 수 없습니다" 화면으로 덮는다 (5-A 실측) -->
+            <meta-data
+                android:name="distractionOptimized"
+                android:value="true" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>
