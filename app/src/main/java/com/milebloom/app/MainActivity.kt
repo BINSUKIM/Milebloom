@@ -8,6 +8,7 @@ import android.content.pm.ApplicationInfo
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -19,6 +20,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.milebloom.app.mode.AppMode
+import com.milebloom.app.mode.DisplayLevel
 import com.milebloom.app.render.CarModel
 import com.milebloom.app.render.LandscapeView
 import com.milebloom.app.speech.VoiceIn
@@ -74,6 +76,7 @@ class MainActivity : AppCompatActivity() {
                 launch {
                     app.signals.snapshot.collect { s ->
                         scene.snapshot = s
+                        applyLevel(s.uxActiveRestrictions)
                         permissionIntro.onSnapshot(s)
                     }
                 }
@@ -91,6 +94,19 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
+    /** 제한이 평소보다 강해지면 즉시 Lv3 (D-081). debug 빌드는 [uxOverride]로 강화된 제한을 흉내 낼 수 있다 */
+    private fun applyLevel(active: Int?) {
+        lastUxActive = active
+        val level = DisplayLevel.of(uxOverride ?: active)
+        if (scene.level != level) Log.i("MBMODE", "표시 수준 ${scene.level} → $level (active=0x${(uxOverride ?: active)?.toString(16)}${if (uxOverride != null) ", debug 주입" else ""})")
+        scene.level = level
+    }
+
+    private var lastUxActive: Int? = null
+
+    /** debug 전용: 플랫폼 값 대신 쓸 activeRestrictions. null = 실제 값 */
+    private var uxOverride: Int? = null
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
@@ -120,6 +136,7 @@ class MainActivity : AppCompatActivity() {
      * - wheel true|false — 바퀴 회전 시험(D-063) 켜고 끄기. 사용자 비교용
      * - sun·month는 다음 P의 오늘의 색에도 적용된다
      * - ambientLink false — 설정의 '실내 조명 연동' 끔(D-053): 사용자 원래 색으로 되돌린다
+     * - uxActive N — 플랫폼 activeRestrictions 대신 N을 쓴다 (D-081, 에뮬레이터에서 제한 강화를 못 일으킬 때). -1이면 해제
      */
     private fun registerSceneDebugReceiver() {
         val r = object : BroadcastReceiver() {
@@ -132,6 +149,10 @@ class MainActivity : AppCompatActivity() {
                 if (i.hasExtra("sun")) {
                     scene.sunDownOverride = sun
                     app.sunDownOverride = sun
+                }
+                if (i.hasExtra("uxActive")) {
+                    uxOverride = i.getIntExtra("uxActive", -1).takeIf { it >= 0 }
+                    applyLevel(lastUxActive)
                 }
                 if (i.hasExtra("ambientLink")) app.ambient.setLinkEnabled(i.getBooleanExtra("ambientLink", true))
                 val stage = i.getIntExtra("stage", 0)

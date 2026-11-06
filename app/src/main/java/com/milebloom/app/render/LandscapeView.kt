@@ -15,6 +15,7 @@ import androidx.core.graphics.ColorUtils
 import com.milebloom.app.ambient.Oklch
 import com.milebloom.app.ambient.TodayColor
 import com.milebloom.app.mode.AppMode
+import com.milebloom.app.mode.DisplayLevel
 import com.milebloom.app.vehicle.SeatPos
 import com.milebloom.app.vehicle.VehicleSnapshot
 import kotlin.math.PI
@@ -62,6 +63,13 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
     /** 이번 P 체결의 오늘의 색. 주차 톤으로 넘어가는 만큼 하늘 위쪽이 30%까지 물든다 (30번 6.4·7.2, D-071) */
     var today: TodayColor? = null
 
+    /**
+     * 표시 수준 (30번 6.3, D-081). Lv3이면 세로 그라데이션 한 장만 그린다 — 전환은 연출 없이 즉시.
+     * 차·풍경·바퀴를 그리지 않고, 낮밤 20초 전환만 남는다. 음성 버튼은 화면이 따로 얹는다(5-F)
+     */
+    var level: DisplayLevel = DisplayLevel.LV1
+        set(value) { if (field != value) { field = value; invalidate() } }
+
     /** 디버그·시연용: null = 해 계산(서울), true = 해 짐, false = 낮 */
     var sunDownOverride: Boolean? = null
 
@@ -95,6 +103,9 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val skyPaint = Paint()
     private val fogPaint = Paint()
+    private val minimalPaint = Paint()
+    private var minimalKey = 0L
+    private var minimalH = 0
     private var skyKey = 0L
     private var fogKey = 0
     private val moon = Path()
@@ -132,8 +143,10 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
     }
 
     override fun doFrame(frameTimeNanos: Long) {
-        // 30 fps 상한 (30번 6.2) — vsync 60Hz에서 두 번에 한 번만 그린다
-        if (frameTimeNanos - lastDrawNs >= FRAME_NS - VSYNC_SLACK_NS) {
+        // 30 fps 상한 (30번 6.2) — vsync 60Hz에서 두 번에 한 번만 그린다.
+        // Lv3은 움직임이 없어 낮밤 전환만 따라가면 된다 — 1초에 한 번 (30번 6.2 '변화가 있을 때만')
+        val interval = if (level == DisplayLevel.LV3) MINIMAL_FRAME_NS else FRAME_NS
+        if (frameTimeNanos - lastDrawNs >= interval - VSYNC_SLACK_NS) {
             lastDrawNs = frameTimeNanos
             invalidate()
         }
@@ -334,7 +347,9 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
     override fun onDraw(canvas: Canvas) {
         val t0 = System.nanoTime()
         val now = SystemClock.uptimeMillis() * 1_000_000L
-        val dt = if (lastStepNs == 0L) 0f else ((now - lastStepNs) / 1e9f).coerceIn(0f, 0.1f)
+        // 한 프레임에 진행할 시간 상한. Lv3은 1초에 한 번 그리므로 상한도 넓힌다 — 아니면 낮밤 20초 전환이 수 분으로 늘어난다
+        val maxDt = if (level == DisplayLevel.LV3) 1.5f else 0.1f
+        val dt = if (lastStepNs == 0L) 0f else ((now - lastStepNs) / 1e9f).coerceIn(0f, maxDt)
         lastStepNs = now
         step(dt)
 
@@ -343,6 +358,12 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
         resolvePalette(st)
         val w = width.toFloat()
         val H = lay.H
+
+        if (level == DisplayLevel.LV3) {
+            drawMinimal(canvas, st)
+            recordStats(System.nanoTime() - t0)
+            return
+        }
 
         // L0 하늘
         val key = cSkyTop.toLong() shl 32 or (cSkyLow.toLong() and 0xFFFFFFFFL)
@@ -434,6 +455,26 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
         if (dim > 0.001f) canvas.drawColor((dim * 255).toInt() shl 24)
 
         recordStats(System.nanoTime() - t0)
+    }
+
+    /**
+     * Lv3 최소 모드 (30번 6.3·7.2, 시안 J06~J08): 위 = 하늘색 7 : 최근 오늘의 색 3, 아래 = ground 7 : 같은 색 3.
+     * 오늘의 색이 아직 없으면(앱을 켠 뒤 첫 P 전) 그달의 기본 색. 주행 밤 감광 15%는 그대로
+     */
+    private fun drawMinimal(canvas: Canvas, st: SceneState) {
+        val c = today ?: TodayColor.of(st.month, 0f, 0f, 1f)
+        val tint = mix(c.minimalDayArgb, c.minimalNightArgb, darkW)
+        val top = mix(cSkyTop, tint, 0.3f)
+        val bottom = mix(cGround, tint, 0.3f)
+        val key = top.toLong() shl 32 or (bottom.toLong() and 0xFFFFFFFFL)
+        if (key != minimalKey || minimalH != height) {
+            minimalKey = key
+            minimalH = height
+            minimalPaint.shader = LinearGradient(0f, 0f, 0f, height.toFloat(), top, bottom, Shader.TileMode.CLAMP)
+        }
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), minimalPaint)
+        val dim = 0.15f * darkW * (1f - memoryW)
+        if (dim > 0.001f) canvas.drawColor((dim * 255).toInt() shl 24)
     }
 
     /** 띠 위 요소를 화면에 보이는 반복 위치마다 그린다. 흐름은 오른쪽 → 왼쪽 */
@@ -569,6 +610,7 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
 
         /** 정차 판정 후 흐름이 멈추는 시간(초) — 30번 6.2-B (D-064). 곡선은 사인 이징 인-아웃 */
         const val TODAY_WASH = 0.30f
+        const val MINIMAL_FRAME_NS = 1_000_000_000L
         const val RIDGE_BACK_H = 0.10f
         const val RIDGE_BACK_SHIFT = 0.37f
         const val RIDGE_FRONT_H = 0.07f

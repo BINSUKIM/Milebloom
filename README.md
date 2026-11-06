@@ -144,6 +144,7 @@ adb logcat -s MBSIG:I MBVEH:E
 
 ```bash
 adb shell am broadcast --user 10 -a com.milebloom.app.SCENE --es sun down --ei stage 7 --ei month 4 --es car TUCSON --ez hud false
+adb shell am broadcast --user 10 -a com.milebloom.app.SCENE --ei uxActive 511   # 제한 강화 흉내 → Lv3, -1이면 해제
 ```
 
 ## 구현 범위
@@ -161,6 +162,7 @@ adb shell am broadcast --user 10 -a com.milebloom.app.SCENE --es sun down --ei s
 | 오늘의 색 | 달·비·밤·곧은 길로 색을 계산해 P 체결 때 앰비언트 라이트에 1회 적용하고 하늘을 물들임. 달린 집계는 메모리에만 있음 |
 | P 지점 좌표 | FusedLocation 1회 조회. 지금은 로그로만 남김 |
 | 주행 중 표시 | `distractionOptimized` 선언으로 D에서 앱이 가려지지 않음 |
+| 주행 제한 강화 → 최소 화면 | 플랫폼 UX 제한(`activeRestrictions`)에 평소 주행(`NO_VIDEO`·`NO_SETUP`) 밖의 비트가 켜지면 즉시 세로 그라데이션 한 장(Lv3)으로 바꾸고, 평소로 돌아오면 원래 화면으로 돌아옵니다. 전환 연출은 없습니다 |
 
 ### 1차 이후로 미룸 (이 APK에 없음)
 
@@ -169,12 +171,13 @@ adb shell am broadcast --user 10 -a com.milebloom.app.SCENE --es sun down --ei s
 | **저장·숲 성장** | 저장소가 없습니다. **숲은 자라지 않으며, 화면의 숲과 들판은 시연용 고정값(5단계)입니다.** 앱을 다시 켜면 오늘의 색도 첫 P 전까지 사라집니다 |
 | **주차 화면·전국 지도** | P에서는 풍경만 보입니다. 도착 인사, 기록 열람, 지도, 설정 화면은 없습니다 |
 | **음성** | STT·TTS 래퍼 코드만 있고 음성 버튼과 음성 기록은 없습니다. debug 빌드에 시험 버튼이 있습니다. 앱 안 음성 인식은 에뮬레이터에서 확인하지 못했습니다 |
-| **표시 수준** | UX 제약 신호를 받기만 합니다. 표시 수준 단계에 따른 정적 화면 전환은 아직 없습니다 |
+| **표시 수준 Lv2** | 사용자가 고르는 정적 화면(Lv2)은 없습니다. 제한 강화 때의 Lv3 전환만 있습니다 |
 | **차종 선택** | 기본 아반떼 고정입니다. 그랜저·투싼 도형은 있고 debug 조작으로만 바꿉니다 |
 | **일부 에셋** | 가는 나무·개울은 자리표시, 여름·겨울 들판은 봄·가을 형태를 빌려 씁니다 |
 
 ### 확인하지 못한 것
 
+- **실제 제한 강화로 Lv3 전환을 확인하지 못했습니다.** 에뮬레이터 설정에서 평소보다 강한 제한(`0x1ff`)은 주행 상태를 알 수 없을 때만 걸리고, 그 상태는 Virtual Console로 만들 수 없습니다. 같은 값을 debug 빌드에 주입해(`--ei uxActive 511`, 해제 `-1`) 전환을 확인했고, 판정 규칙은 단위 테스트로 확인했습니다
 - 실차 동작과 실차 성능. 위 수치와 동작은 모두 에뮬레이터 결과입니다
 - 실차에서 꺼진 실내 조명에 색을 썼을 때의 동작
 - 등록 카테고리(Lifestyle)에서 주행 중 표시가 App Market 심사를 통과하는지

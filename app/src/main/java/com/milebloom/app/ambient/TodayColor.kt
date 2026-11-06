@@ -23,6 +23,10 @@ data class TodayColor(val hue: Float, val sat: Float, val ambientValue: Float) {
     /** 주차 밤 화면색 (30번 7.2) */
     val memoryNightArgb: Int get() = hsvToArgb(hue, sat * 0.60f, 0.42f)
 
+    /** Lv3 최소 모드 낮·밤 화면색 (30번 7.2) */
+    val minimalDayArgb: Int get() = hsvToArgb(hue, sat * 0.35f, 0.93f)
+    val minimalNightArgb: Int get() = hsvToArgb(hue, sat * 0.50f, 0.30f)
+
     companion object {
         /** 월 기본 색상 (D-051). `MbPalette.ambientBaseHue`와 같은 값 — 원천은 `assets/art/gen_palette.py` */
         val BASE_HUE = floatArrayOf(205f, 320f, 85f, 340f, 275f, 215f, 48f, 165f, 330f, 30f, 22f, 355f)

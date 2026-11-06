@@ -3,6 +3,7 @@ package com.milebloom.app
 import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.text.LineBreakConfig
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -32,10 +33,12 @@ class PermissionIntro(private val activity: Activity, root: FrameLayout) {
         val dp = activity.resources.displayMetrics.density
         val reason = TextView(activity).apply {
             // 에뮬레이터 실측: CAR_SPEED는 '위치 정보에 액세스', Pleos FUSED_LOCATION은 '알 수 없는 작업 실행'으로 표시된다
-            text = "권한 창이 두 번 뜹니다. 주차한 곳을 남기고, 차가 서면 풍경도 쉬어 가게 하는 데 씁니다."
+            // 낯선 문구 때문에 거부하면 다시 묻지 않으므로 미리 알린다. 실차 문구는 미확인이라 '보일 수 있지만' (D-080)
+            text = "권한 창이 두 번 뜹니다. 주차한 곳을 남기고, 차가 서면 풍경도 쉬어 가게 하는 데 씁니다. 창에 '알 수 없는 작업'이라고 보일 수 있지만 Pleos 위치 권한입니다."
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 28f)
             setTextColor(0xFF2F3A35.toInt()) // uiText MD (30번 2.7)
             gravity = Gravity.CENTER
+            lineBreakWordStyle = LineBreakConfig.LINE_BREAK_WORD_STYLE_PHRASE // 어절 중간에서 줄을 나누지 않는다
         }
         val ok = Button(activity).apply {
             text = "계속"
