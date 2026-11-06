@@ -532,10 +532,11 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
             canvas.drawPath(moon, fill)
         }
         drawBand(canvas, lay.clouds, lay.cloudLen, flowTime * 0.002f * H, sway = false)
-        // 능선 2장 — F1 타일을 높이만 달리해 어긋나게 깐다 (D-069, 시안 review/scene_assets.js의 tile)
-        drawRidge(canvas, lay, RIDGE_BACK_H, RIDGE_BACK_SHIFT, flowTime * 0.004f * H * 0.8f,
-            mix(cFar, cSkyLow, 0.5f), mix(cFarShade, cSkyLow, 0.5f))
-        drawRidge(canvas, lay, RIDGE_FRONT_H, RIDGE_FRONT_SHIFT, flowTime * 0.004f * H, cFar, cFarShade)
+        // 능선 2장 — 모양이 다른 조각 6장을 해시 순서로 잇는다. 두 장의 순서·길이·속도가 다르다 (D-085, 30번 4.5-B)
+        drawRidgeSeq(canvas, lay, LandscapeShapes.FAR_RIDGE_BACK_SEQ, RIDGE_BACK_H, RIDGE_BACK_START_UNITS,
+            flowTime * 0.004f * H * 0.8f, mix(cFar, cSkyLow, 0.5f), mix(cFarShade, cSkyLow, 0.5f))
+        drawRidgeSeq(canvas, lay, LandscapeShapes.FAR_RIDGE_FRONT_SEQ, RIDGE_FRONT_H, RIDGE_FRONT_START_UNITS,
+            flowTime * 0.004f * H, cFar, cFarShade)
 
         // 중경 평지 (ground를 far 쪽으로 35% — 대기 원근). 무늬 없음
         fill.color = cMidBand
@@ -645,20 +646,31 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
         }
     }
 
-    /** @param heightRatio 타일 높이 1이 화면에서 차지하는 비율(H) · @param shift 시작 어긋남(타일 폭 비율) */
-    private fun drawRidge(canvas: Canvas, lay: SceneLayout, heightRatio: Float, shift: Float, offset: Float, c: Int, sh: Int) {
-        val len = lay.farLen
-        var x = mod(shift * len - offset, len) - len
+    /** 능선 한 장 (D-085). 조각 폭 단위 u = H/10(이전 타일과 같은 x 축척), 높이 1 = heightRatio·H.
+     *  @param seq 조각 순서(한 바퀴) · @param startUnits 시작 어긋남(단위) · @param offset 흐른 거리(px, 클수록 왼쪽) */
+    private fun drawRidgeSeq(canvas: Canvas, lay: SceneLayout, seq: IntArray, heightRatio: Float, startUnits: Float,
+                             offset: Float, c: Int, sh: Int) {
+        val u = lay.H / 10f
+        val cycle = (if (seq === LandscapeShapes.FAR_RIDGE_BACK_SEQ) backCycleUnits else frontCycleUnits) * u
+        var x = -mod(offset + startUnits * u, cycle)
+        var n = 0
+        val segs = LandscapeShapes.farRidges
         while (x < width) {
-            canvas.save()
-            canvas.translate(x, lay.horizonY)
-            canvas.scale(len / LandscapeShapes.FAR_RIDGE_TILE_UNITS, heightRatio * lay.H)
-            fill.color = c; canvas.drawPath(LandscapeShapes.farRidgeBase, fill)
-            fill.color = sh; canvas.drawPath(LandscapeShapes.farRidgeShade, fill)
-            canvas.restore()
-            x += len
+            val seg = segs[seq[n % seq.size]]
+            val wPx = seg.width * u
+            if (x + wPx > 0f) {
+                canvas.save()
+                canvas.translate(x, lay.horizonY)
+                canvas.scale(u, heightRatio * lay.H)
+                fill.color = c; canvas.drawPath(seg.base, fill)
+                fill.color = sh; canvas.drawPath(seg.shade, fill)
+                canvas.restore()
+            }
+            x += wPx; n++
         }
     }
+    private val backCycleUnits = LandscapeShapes.ridgeCycleUnits(LandscapeShapes.FAR_RIDGE_BACK_SEQ)
+    private val frontCycleUnits = LandscapeShapes.ridgeCycleUnits(LandscapeShapes.FAR_RIDGE_FRONT_SEQ)
 
     private fun drawStream(canvas: Canvas, lay: SceneLayout, offset: Float) {
         val H = lay.H
@@ -775,9 +787,9 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
         const val TODAY_WASH = 0.30f
         const val MINIMAL_FRAME_NS = 1_000_000_000L
         const val RIDGE_BACK_H = 0.10f
-        const val RIDGE_BACK_SHIFT = 0.37f
+        const val RIDGE_BACK_START_UNITS = 14.8f   // 이전 타일 어긋남 0.37 × 40단위
         const val RIDGE_FRONT_H = 0.07f
-        const val RIDGE_FRONT_SHIFT = 0.09f
+        const val RIDGE_FRONT_START_UNITS = 3.6f   // 0.09 × 40
         const val FLOW_STOP_SEC = 6f
 
         /** 출발 판정 후 흐름이 다시 붙는 시간(초) — 30번 6.2-B (D-064) */

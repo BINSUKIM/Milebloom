@@ -125,6 +125,9 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
             hideKeyboard()
             stack.clear()
             editingId = null; deletingId = null; clearing = false
+            // 움직이던 것을 기다리지 않고 끊는다 (D-088) — 끝 동작(GONE 등)도 돌지 않는다
+            sheetClosing = false
+            Motion.snap(home); Motion.snap(sheet)
             sheet.visibility = View.GONE
             home.visibility = View.GONE
             return
@@ -133,7 +136,7 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         val a = pendingArrival
         pendingArrival = null
         if (a != null && SystemClock.elapsedRealtime() - a.second < PENDING_ARRIVAL_MS) { runArrival(a.first); return }
-        showHome(animate = false)
+        showHome(animate = true)
     }
 
     /** 아직 parked가 아닐 때 온 도착 연출 (줄, 받은 시각) */
@@ -161,6 +164,8 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         arrivalJourneyId = journeyId
         greetingText = line
         stack.clear()
+        sheetClosing = false
+        Motion.snap(sheet)
         sheet.visibility = View.GONE
         main.removeCallbacksAndMessages(null)
         if (!parked) {
@@ -173,6 +178,7 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
 
     private fun runArrival(line: String) {
         // 0 ~ 1.5초: 풍경이 주차 톤으로 넘어가는 동안 비워 둔다 (30번 6.4)
+        Motion.snap(home)
         home.visibility = View.VISIBLE
         greeting.alpha = 0f
         buttonRow.alpha = 0f
@@ -196,7 +202,7 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
     private val openButtons = Runnable {
         buttonsPending = false
         buttonRow.visibility = View.VISIBLE
-        buttonRow.animate().alpha(1f).setDuration(500).start()
+        Motion.enter(buttonRow, dy = dp(c, 12).toFloat(), duration = 300L)
     }
 
     /** 도착 연출이 [endElapsedMs](elapsedRealtime)에 끝난다. 아직 버튼을 열지 않았으면 그때까지 미룬다 */
@@ -218,13 +224,16 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
     /** 뒤로 가기. 처리했으면 true */
     fun onBack(): Boolean {
         if (!parked || stack.isEmpty()) return false
+        var popped = false
         when {
             editingId != null -> { editingId = null; hideKeyboard() }
             deletingId != null -> deletingId = null
             clearing -> clearing = false
-            else -> stack.removeLast()
+            else -> { stack.removeLast(); popped = true }
         }
-        if (stack.isEmpty()) closeSheet() else render()
+        if (stack.isEmpty()) closeSheet()
+        else if (popped) { render(Dir.BACK); scroll.scrollTo(0, 0) }
+        else render()
         return true
     }
 
@@ -269,7 +278,7 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         buttonRow.alpha = 1f
         buttonRow.visibility = View.VISIBLE
         styleHome()
-        if (animate) home.alpha = 0f.also { home.animate().alpha(1f).setDuration(400).start() }
+        if (animate) Motion.enter(home, dy = dp(c, 8).toFloat()) else Motion.snap(home)
     }
 
     private fun styleHome() {
@@ -312,25 +321,47 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         openSheet()
     }
 
+    /** 판이 닫히는 움직임 중인가 — 그 사이에 다시 열면 처음부터 연다 */
+    private var sheetClosing = false
+
+    private enum class Dir { NONE, FORWARD, BACK }
+
     private fun openSheet() {
         main.removeCallbacksAndMessages(null)
-        home.visibility = View.GONE
+        buttonsPending = false
+        val fresh = sheet.visibility != View.VISIBLE || sheetClosing
+        sheetClosing = false
         // 단독 화면(넓음)은 오른쪽 640 dp 판, 내비 옆 분할(좁음)은 화면 전체 (32번 2.2)
         val wide = (sheet.parent as View).width >= dp(c, 1200)
-        sheet.layoutParams = FrameLayout.LayoutParams(if (wide) dp(c, 640) else -1, -1, Gravity.END)
-        sheet.visibility = View.VISIBLE
-        render()
+        if (fresh) {
+            if (wide && home.visibility == View.VISIBLE) Motion.exit(home) { home.visibility = View.GONE }
+            else { Motion.snap(home); home.visibility = View.GONE }
+            sheet.layoutParams = FrameLayout.LayoutParams(if (wide) dp(c, 640) else -1, -1, Gravity.END)
+            sheet.visibility = View.VISIBLE
+            // 판이 들어온다: 넓으면 오른쪽에서 조금, 좁으면 아래에서 조금 (D-088)
+            if (wide) Motion.enter(sheet, dx = dp(c, 40).toFloat()) else Motion.enter(sheet, dy = dp(c, 32).toFloat())
+        }
+        render(Dir.FORWARD)
         scroll.scrollTo(0, 0)
     }
 
     private fun closeSheet() {
         hideKeyboard()
         stack.clear()
-        sheet.visibility = View.GONE
+        val wide = sheet.width >= dp(c, 600) && sheet.width < (sheet.parent as View).width
+        sheetClosing = true
+        Motion.exit(sheet, dx = if (wide) dp(c, 40).toFloat() else 0f, dy = if (wide) 0f else dp(c, 32).toFloat()) {
+            sheetClosing = false
+            sheet.visibility = View.GONE
+        }
         showHome(animate = true)
     }
 
-    private fun render() {
+    /**
+     * 판 내용을 다시 그린다. [dir] FORWARD = 새 쪽(항목이 위에서부터 차례로), BACK = 앞 쪽(왼쪽에서 조금),
+     * NONE = 같은 쪽의 상태 변화(확인·수정·삭제·색 바뀜) — 움직이지 않는다
+     */
+    private fun render(dir: Dir = Dir.NONE) {
         sheet.setBackgroundColor(tone.panel)
         page.removeAllViews()
         page.setPadding(dp(c, 44), dp(c, 36), dp(c, 44), dp(c, 48))
@@ -338,6 +369,11 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
             Page.VoiceList -> renderVoiceList()
             is Page.Day -> renderDay(p.journeyId)
             Page.Settings -> renderSettings()
+        }
+        when (dir) {
+            Dir.FORWARD -> { Motion.snap(page); Motion.stagger(page, dy = dp(c, 16).toFloat()) }
+            Dir.BACK -> { Motion.snap(page); Motion.enter(page, dx = -dp(c, 24).toFloat(), duration = Motion.PAGE_MS) }
+            Dir.NONE -> Motion.snap(page)
         }
     }
 

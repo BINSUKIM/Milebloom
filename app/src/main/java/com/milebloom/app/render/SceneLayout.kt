@@ -173,9 +173,9 @@ class SceneLayout(val state: SceneState, val w: Int, val h: Int, reserveTopPx: F
                 val tall = flower && r.nextFloat() < tallShare
                 val size = H * LandscapeShapes.GRASS_K * (0.6f + r.nextFloat() * 0.6f) * (if (flower) sizeMul else 1f)
                 val shape = when {
-                    !flower -> meadow.grass
+                    !flower -> meadow.grassFor(i)   // 모양만 무더기 번호 해시로 (D-085) — 난수 소비는 그대로
                     tall -> meadow.flowerTall
-                    else -> meadow.flowerLow
+                    else -> meadow.flowerLowFor(i)
                 }
                 val colors = when {
                     !flower -> Paint3.GRASS

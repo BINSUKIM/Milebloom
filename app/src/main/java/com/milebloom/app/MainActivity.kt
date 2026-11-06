@@ -38,6 +38,7 @@ import com.milebloom.app.speech.VoiceOut
 import com.milebloom.app.ui.MbUi
 import com.milebloom.app.ui.MemoryOverlay
 import com.milebloom.app.ui.UiTone
+import com.milebloom.app.ui.Motion
 import com.milebloom.app.ui.VoiceButton
 import com.milebloom.app.vehicle.Gear
 import com.milebloom.app.vehicle.Signal
@@ -275,6 +276,8 @@ class MainActivity : AppCompatActivity() {
         val level = DisplayLevel.of(uxOverride ?: active)
         if (scene.level != level) Log.i("MBMODE", "표시 수준 ${scene.level} → $level (active=0x${(uxOverride ?: active)?.toString(16)}${if (uxOverride != null) ", debug 주입" else ""})")
         scene.level = level
+        // Lv3에서는 주차 화면의 움직임도 끈다 (D-088). 터치 UI는 Lv1에서만 보이지만 경계에서 남는 움직임이 없게
+        Motion.allowed = level == DisplayLevel.LV1
     }
 
     private var lastUxActive: Int? = null

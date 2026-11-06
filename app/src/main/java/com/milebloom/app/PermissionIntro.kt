@@ -12,6 +12,7 @@ import androidx.core.graphics.ColorUtils
 import com.milebloom.app.location.ParkLocator
 import com.milebloom.app.render.Season
 import com.milebloom.app.ui.MbUi
+import com.milebloom.app.ui.Motion
 import com.milebloom.app.ui.MbUi.dp
 import com.milebloom.app.ui.UiTone
 
@@ -96,15 +97,18 @@ class PermissionIntro(private val activity: Activity, root: FrameLayout) {
 
     private fun markDone() = prefs.edit().putBoolean(KEY_DONE, true).apply()
 
+    /** 사용자가 닫을 때만 짧게 사라진다. 기어가 P에서 벗어나 닫힐 때는 [refresh]가 바로 숨긴다 (D-088) */
     private fun close() {
         page = Page.NONE
-        refresh()
+        if (isShowing && parked) Motion.exit(card, dy = dp(activity, 12).toFloat()) { refresh() } else refresh()
     }
 
     private fun refresh() {
         val show = page != Page.NONE && parked
         val was = isShowing
+        if (!show) Motion.snap(card) // 진행 중인 움직임을 기다리지 않는다
         layer.visibility = if (show) View.VISIBLE else View.GONE
+        if (show && !was) Motion.enter(card, dy = dp(activity, 20).toFloat())
         // 뒤 풍경을 옅게 어둡혀 카드가 풍경과 섞이지 않게 한다 (흐림은 [onBackdrop])
         layer.setBackgroundColor(if (tone.night) 0x59000000 else 0x33000000)
         if (was != show) { onBackdrop(show); onShowingChanged(show) }
@@ -123,8 +127,11 @@ class PermissionIntro(private val activity: Activity, root: FrameLayout) {
         card.layoutParams = (card.layoutParams as FrameLayout.LayoutParams).apply {
             width = if (layer.width > 0 && layer.width - dp(c, 80) <= maxW) -1 else maxW
         }
+        val wasShowing = isShowing
         if (p == Page.INTRO) buildIntro() else buildResult()
         refresh()
+        // 이미 떠 있던 카드의 내용이 바뀌면(안내 → 결과) 항목만 차례로 (D-088)
+        if (wasShowing) Motion.stagger(card, dy = dp(activity, 12).toFloat())
     }
 
     private fun buildIntro() {

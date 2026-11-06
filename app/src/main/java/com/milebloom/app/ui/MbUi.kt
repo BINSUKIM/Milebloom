@@ -98,6 +98,7 @@ object MbUi {
         isClickable = true
         isFocusable = true
         setOnClickListener { onClick() }
+        Motion.pressable(this) // 누르는 동안 0.97배 (D-088)
     }
 
     fun rounded(fill: Int, radius: Float, rippleBase: Int? = null): android.graphics.drawable.Drawable {
