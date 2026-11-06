@@ -7,6 +7,7 @@ import android.os.SystemClock
 import com.milebloom.app.ambient.AmbientDirector
 import com.milebloom.app.ambient.ArrivalGreeting
 import com.milebloom.app.ambient.JourneyTally
+import com.milebloom.app.record.DemoPlaces
 import com.milebloom.app.record.Forest
 import com.milebloom.app.record.RecordCodec
 import com.milebloom.app.record.RecordStore
@@ -168,6 +169,12 @@ class MilebloomApp : Application() {
     fun clearAllRecords() {
         records.update { it.clearAll(currentJourneyId) }
         publishScene(null)
+    }
+
+    /** debug 시연용: 여러 장소의 가짜 도착 기록을 넣는다 (전국 지도 시연). 풍경은 바꾸지 않는다 — [DemoPlaces] */
+    fun debugAddDemoPlaces() {
+        records.update { DemoPlaces.inject(it, System.currentTimeMillis()) }
+        Log.i(TAG, "debug 장소 주입 → 장소 ${records.current.parkPoints.size}곳 · 주행 ${records.current.journeys.size}건 (실측 아님)")
     }
 
     /** debug 시연용: 주행 없이 누적 거리를 더한다 (시작 상태 만들기). 실측과 구분해 [Forest.debugKm]에 남는다 */

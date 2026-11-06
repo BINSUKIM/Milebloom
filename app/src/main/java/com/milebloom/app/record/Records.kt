@@ -114,7 +114,7 @@ data class Records(
         if (near != null) {
             pointId = near.id
             next = next.copy(parkPoints = parkPoints.map {
-                if (it.id == near.id) it.copy(visitCount = it.visitCount + 1, lastAt = at) else it
+                if (it.id == near.id) it.copy(visitCount = it.visitCount + 1, lastAt = maxOf(it.lastAt, at), firstAt = minOf(it.firstAt, at)) else it
             })
         } else {
             pointId = nextId
@@ -143,6 +143,37 @@ data class Records(
 
     fun deleteMemo(id: Long) = copy(memos = memos.filterNot { it.id == id })
 
+    // ── 장소 (전국 지도, D-042·D-030) ──
+
+    /** 그 장소에 도착한 주행 — 최근 것이 위. 도착(P 체결)한 것만 */
+    fun journeysAt(pointId: Long): List<Journey> =
+        journeys.filter { it.parkPointId == pointId && it.endedAt != null }.sortedByDescending { it.endedAt }
+
+    /** 그 장소의 대표 색 = **마지막 도착의 오늘의 색** (30번 6.5·7.4). 색이 남은 도착이 없으면 null */
+    fun colorOf(pointId: Long): Int? = journeysAt(pointId).firstOrNull { it.colorArgb != null }?.colorArgb
+
+    /**
+     * 사용자가 직접 붙인 이름 (D-042 — 앱이 추정하지 않는다). 앞뒤 공백을 지우고 [LABEL_MAX]자에서 자른다.
+     * 빈 글이면 이름을 없앤다(다시 "방문 n회"가 제목이 된다)
+     */
+    fun renameParkPoint(id: Long, label: String?): Records {
+        val t = label?.trim()?.take(LABEL_MAX)?.takeIf { it.isNotEmpty() }
+        if (parkPoint(id) == null) return this
+        return copy(parkPoints = parkPoints.map { if (it.id == id) it.copy(label = t) else it })
+    }
+
+    /**
+     * 장소 하나 지우기 (D-030). 그 점과 이름을 지우고, 그 장소에 도착한 주행의 도착지를 끊는다.
+     * 주행·음성 기록·풍경은 남는다 — 음성 기록은 목록에서 "위치 없음"으로 보인다. 다음에 같은 곳에 세우면 새 점이 생긴다
+     */
+    fun deleteParkPoint(id: Long): Records {
+        if (parkPoint(id) == null) return this
+        return copy(
+            parkPoints = parkPoints.filterNot { it.id == id },
+            journeys = journeys.map { if (it.parkPointId == id) it.copy(parkPointId = null) else it },
+        )
+    }
+
     /**
      * 전체 초기화 (D-030). 진행 중인 주행 하나는 남긴다 — 그 주행에 남길 말이 갈 곳이 있어야 한다.
      * 풍경은 남긴다 — 장소·글·시각이 없는 그림이다. 요소가 어느 주행에서 언제 생겼는지만 끊는다 (D-087)
@@ -156,6 +187,8 @@ data class Records(
     companion object {
         /** 같은 장소로 보는 반경 (12번 13.4, D-042) */
         const val SAME_PLACE_M = 200.0
+        /** 장소 이름 최대 글자 수 — 목록 한 줄에 들어가는 길이 */
+        const val LABEL_MAX = 16
 
         fun distanceM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
             val r = 6_371_000.0

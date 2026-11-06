@@ -27,6 +27,12 @@ object Oklch {
         return fromLch(l1 + (l2 - l1) * t, c1 + (c2 - c1) * t, h1 + d * t)
     }
 
+    /** 밝기(OKLCH L)를 [maxL] 이하로 자른다. 색상각·채도는 그대로 (지도 밤 실루엣 상한 0.41, D-071) */
+    fun capLightness(argb: Int, maxL: Double): Int {
+        val (l, c, h) = toLch(argb)
+        return if (l <= maxL) argb else fromLch(maxL, c, h)
+    }
+
     private fun toLch(argb: Int): Triple<Double, Double, Double> {
         fun lin(shift: Int): Double {
             val v = ((argb shr shift) and 0xFF) / 255.0

@@ -18,6 +18,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.graphics.ColorUtils
 import com.milebloom.app.ambient.ArrivalGreeting
+import com.milebloom.app.map.KoreaMapView
+import com.milebloom.app.map.MapGeo
 import com.milebloom.app.record.Records
 import com.milebloom.app.ui.MbUi.dp
 import java.text.SimpleDateFormat
@@ -33,9 +35,12 @@ import java.util.Locale
  * 홈(풍경 위)
  * - 도착(P 체결): 0~1.5초 비움(풍경이 주차 톤으로 바뀌는 동안) → 인사 한 줄 + TTS → 버튼
  * - 승차(앱을 켰을 때 P): 짧은 인사(소리 없음)와 버튼
- * - 버튼은 시안 중 구현한 것만: 음성 기록·설정. 전국 지도는 아직 없다
+ * - 버튼: 전국 지도·음성 기록·설정 (M01). 지도는 버튼으로 연다 — 자동으로 넘어가지 않는다 (D-071)
  *
  * 판(주차 중에만)
+ * - 전국 지도(P01~P08, 5-H): 차를 세운 곳에만 원. 확대 없이 눌러서 좁혀 본다 —
+ *   겹친 원 → 근처 장소 목록 → 그 장소의 방문 기록(이름 붙이기·이 장소 지우기) → 그날 (D-042·D-030).
+ *   단독 화면은 지도 왼쪽 + 판 오른쪽 640 dp, 내비 옆 분할은 판이 화면을 채우고 작은 지도를 남긴다 (32번 2.2)
  * - 음성 기록: 시간순 전체 목록(P12) → 그날(P10의 글 부분): 도착 인사와 그 주행에서 남긴 말, 확인·수정·삭제
  * - 설정: 실내 조명 연동, 주차한 곳 남기기, 권한 다시 묻기, 기록 모두 지우기 (D-030)
  */
@@ -47,6 +52,8 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         fun editMemo(id: Long, text: String)
         fun deleteMemo(id: Long)
         fun clearAll()
+        fun renamePlace(id: Long, label: String?)
+        fun deletePlace(id: Long)
         var ambientLink: Boolean
         var keepParkPoints: Boolean
         fun missingPermissions(): List<String>
@@ -87,6 +94,12 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         data object VoiceList : Page
         data class Day(val journeyId: Long) : Page
         data object Settings : Page
+        /** 전국 지도 첫 화면 (P01·P03) */
+        data object MapHome : Page
+        /** 겹친 원의 근처 장소 목록 (P05·P06). [all]이면 지도 밖 장소까지 모든 장소 */
+        data class Cluster(val ids: List<Long>, val all: Boolean = false) : Page
+        /** 고른 장소의 방문 기록 (P07·P08) */
+        data class Place(val id: Long) : Page
     }
 
     // 판 안의 편집 상태 — 기록이 바뀌어 판을 다시 그려도 유지한다
@@ -95,6 +108,17 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
     private var deletingId: Long? = null
     private var clearing = false
     private var askedOnce = false
+    private var renamingPlace: Long? = null
+    private var renameDraft = ""
+    private var deletingPlace: Long? = null
+
+    // ── 전국 지도 ──
+    /** 단독 화면(넓음)에서 판 왼쪽을 채우는 지도 */
+    private val bigMap = KoreaMapView(c).apply { visibility = View.GONE }
+    /** 내비 옆 분할(좁음)에서 판 안에 넣는 지도 — 첫 화면은 크게, 목록·방문 기록에서는 작게 */
+    private val inlineMap = KoreaMapView(c)
+    /** 오늘 도착한 원의 테두리 연출을 이미 보인 도착(주행 id) — 한 번만 */
+    private var ringShownFor: Long? = null
 
     /** 이번 도착의 주행. 음성 기록 버튼이 확인 전 기록이 있으면 그날로 바로 연다 */
     private var arrivalJourneyId: Long? = null
@@ -105,10 +129,18 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         root.addView(home, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
         // 글자·버튼 묶음의 실제 자리. 여백을 조금 더해 풀 끝이 글자에 닿지 않게 한다
         home.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> reportHome() }
+        // 단독 ↔ 내비 옆 분할로 폭이 바뀌면 버튼 크기를 다시 정한다 (좁으면 세 버튼이 한 줄에 들어가게)
+        root.addOnLayoutChangeListener { v, l, _, r, _, ol, _, or_, _ ->
+            val narrow = (r - l) in 1 until dp(c, 1200)
+            if ((r - l) != (or_ - ol) && narrow != homeNarrow) { homeNarrow = narrow; v.post { if (parked) styleHome() } }
+        }
         home.viewTreeObserver.addOnGlobalLayoutListener { reportHome() }
         scroll.addView(page, FrameLayout.LayoutParams(-1, -2))
         sheet.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+        root.addView(bigMap, FrameLayout.LayoutParams(-1, -1, Gravity.START))
         root.addView(sheet, FrameLayout.LayoutParams(-1, -1))
+        bigMap.onTap = ::onMapTap
+        inlineMap.onTap = ::onMapTap
     }
 
     // ───────────── 바깥에서 부르는 것 ─────────────
@@ -125,10 +157,13 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
             hideKeyboard()
             stack.clear()
             editingId = null; deletingId = null; clearing = false
+            renamingPlace = null; deletingPlace = null
             // 움직이던 것을 기다리지 않고 끊는다 (D-088) — 끝 동작(GONE 등)도 돌지 않는다
             sheetClosing = false
-            Motion.snap(home); Motion.snap(sheet)
+            Motion.snap(home); Motion.snap(sheet); Motion.snap(bigMap)
+            bigMap.stopRing(); inlineMap.stopRing()
             sheet.visibility = View.GONE
+            bigMap.visibility = View.GONE
             home.visibility = View.GONE
             return
         }
@@ -165,8 +200,11 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         greetingText = line
         stack.clear()
         sheetClosing = false
-        Motion.snap(sheet)
+        renamingPlace = null; deletingPlace = null
+        Motion.snap(sheet); Motion.snap(bigMap)
+        bigMap.stopRing()
         sheet.visibility = View.GONE
+        bigMap.visibility = View.GONE
         main.removeCallbacksAndMessages(null)
         if (!parked) {
             pendingArrival = if (fresh) line to SystemClock.elapsedRealtime() else null
@@ -217,7 +255,7 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
     fun onRecordsChanged() {
         if (parked) {
             styleHome()
-            if (stack.isNotEmpty() && editingId == null) render()
+            if (stack.isNotEmpty() && editingId == null && renamingPlace == null) render()
         }
     }
 
@@ -227,7 +265,9 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         var popped = false
         when {
             editingId != null -> { editingId = null; hideKeyboard() }
+            renamingPlace != null -> { renamingPlace = null; hideKeyboard() }
             deletingId != null -> deletingId = null
+            deletingPlace != null -> deletingPlace = null
             clearing -> clearing = false
             else -> { stack.removeLast(); popped = true }
         }
@@ -246,6 +286,7 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
     // ───────────── 홈 ─────────────
 
     private var lastBounds: android.graphics.RectF? = null
+    private var homeNarrow = false
 
     private fun reportHome() {
         val r = if (home.visibility != View.VISIBLE || home.width == 0) null else {
@@ -293,15 +334,20 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         buttonRow.removeAllViews()
         val unconfirmed = deps.records.unconfirmedCount
         val voiceLabel = if (unconfirmed > 0) "음성 기록 · 확인 전 $unconfirmed" else "음성 기록"
-        addHomePill(voiceLabel, bold = unconfirmed > 0) { openVoice() }
-        addHomePill("설정") { push(Page.Settings) }
+        // 내비 옆 분할(좁음)은 세 버튼이 한 줄에 들어가도록 최소 폭과 간격을 줄인다
+        val narrow = (home.parent as? View)?.let { it.width in 1 until dp(c, 1200) } ?: false
+        homeNarrow = narrow
+        addHomePill("전국 지도", narrow) { stack.clear(); push(Page.MapHome) }
+        addHomePill(voiceLabel, narrow, bold = unconfirmed > 0) { openVoice() }
+        addHomePill("설정", narrow) { push(Page.Settings) }
     }
 
-    private fun addHomePill(label: String, bold: Boolean = false, onClick: () -> Unit) {
+    private fun addHomePill(label: String, narrow: Boolean, bold: Boolean = false, onClick: () -> Unit) {
         val v = MbUi.pill(c, label, tone.pill, tone.text, bold = bold, onClick = onClick)
-        v.minWidth = dp(c, 220)
+        v.minWidth = dp(c, if (narrow) 160 else 220)
+        if (narrow) v.setPadding(dp(c, 28), 0, dp(c, 28), 0)
         buttonRow.addView(v, LinearLayout.LayoutParams(-2, dp(c, MbUi.PILL_H)).apply {
-            if (buttonRow.childCount > 0) marginStart = dp(c, 20)
+            if (buttonRow.childCount > 0) marginStart = dp(c, if (narrow) 14 else 20)
         })
     }
 
@@ -348,6 +394,10 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
     private fun closeSheet() {
         hideKeyboard()
         stack.clear()
+        if (bigMap.visibility == View.VISIBLE) {
+            bigMap.stopRing()
+            Motion.exit(bigMap) { bigMap.visibility = View.GONE }
+        }
         val wide = sheet.width >= dp(c, 600) && sheet.width < (sheet.parent as View).width
         sheetClosing = true
         Motion.exit(sheet, dx = if (wide) dp(c, 40).toFloat() else 0f, dy = if (wide) 0f else dp(c, 32).toFloat()) {
@@ -362,19 +412,35 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
      * NONE = 같은 쪽의 상태 변화(확인·수정·삭제·색 바뀜) — 움직이지 않는다
      */
     private fun render(dir: Dir = Dir.NONE) {
-        sheet.setBackgroundColor(tone.panel)
+        // 내비 옆 분할의 지도 첫 화면은 판 전체가 지도 바탕 (P03)
+        sheet.setBackgroundColor(if (stack.lastOrNull() == Page.MapHome && !isWide()) tone.mapBg else tone.panel)
         page.removeAllViews()
         page.setPadding(dp(c, 44), dp(c, 36), dp(c, 44), dp(c, 48))
         when (val p = stack.lastOrNull() ?: return) {
             Page.VoiceList -> renderVoiceList()
             is Page.Day -> renderDay(p.journeyId)
             Page.Settings -> renderSettings()
+            Page.MapHome -> renderMapHome()
+            is Page.Cluster -> renderCluster(p)
+            is Page.Place -> renderPlace(p.id)
         }
+        updateBigMap()
         when (dir) {
             Dir.FORWARD -> { Motion.snap(page); Motion.stagger(page, dy = dp(c, 16).toFloat()) }
             Dir.BACK -> { Motion.snap(page); Motion.enter(page, dx = -dp(c, 24).toFloat(), duration = Motion.PAGE_MS) }
             Dir.NONE -> Motion.snap(page)
         }
+    }
+
+    /** 뒤로 버튼 글 — 바로 앞 쪽의 이름 */
+    private fun prevLabel(): String = when (stack.getOrNull(stack.size - 2)) {
+        null -> "오늘의 숲"
+        Page.VoiceList -> "음성 기록"
+        is Page.Day -> "그날"
+        Page.Settings -> "설정"
+        Page.MapHome -> "전국 지도"
+        is Page.Cluster -> "장소 목록"
+        is Page.Place -> "방문 기록"
     }
 
     private fun backTo(label: String) {
@@ -403,8 +469,8 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
 
     private fun renderVoiceList() {
         val r = deps.records
-        backTo(if (stack.size > 1) "설정" else "오늘의 숲")
-        title("음성 기록", "시간순 · 받아쓴 글만 남고 소리는 저장하지 않아요")
+        backTo(prevLabel())
+        title("음성 기록","시간순 · 받아쓴 글만 남고 소리는 저장하지 않아요")
         val memos = r.memosNewestFirst()
         if (memos.isEmpty()) {
             rule()
@@ -427,7 +493,7 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         rule(top = 0)
     }
 
-    private fun listRow(dotColor: Int, main: String, meta: String, strongMeta: Boolean, onClick: () -> Unit): View {
+    private fun listRow(dotColor: Int, main: String, meta: String, strongMeta: Boolean, pencil: Boolean = false, onClick: () -> Unit): View {
         val row = LinearLayout(c).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -440,7 +506,10 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         val dot = View(c).apply { background = MbUi.rounded(dotColor, dp(c, 14).toFloat()) }
         row.addView(dot, LinearLayout.LayoutParams(dp(c, 28), dp(c, 28)).apply { marginEnd = dp(c, 24); gravity = Gravity.TOP; topMargin = dp(c, 4) })
         val col = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(MbUi.text(c, 28f, tone.text, s = main).apply { maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END })
+        col.addView(MbUi.text(c, 28f, tone.text, s = main).apply {
+            maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+            if (pencil) withPencil(this)
+        })
         col.addView(MbUi.text(c, 24f, if (strongMeta) tone.text else tone.sub, bold = false, s = meta), lp(top = 10))
         row.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
         row.addView(MbUi.text(c, 36f, tone.sub, s = "›"), LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(c, 16) })
@@ -452,7 +521,7 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
     private fun renderDay(journeyId: Long) {
         val r = deps.records
         val j = r.journey(journeyId)
-        backTo("음성 기록")
+        backTo(prevLabel())
         val at = j?.endedAt ?: j?.startedAt
         page.addView(MbUi.text(c, 24f, tone.sub, s = listOfNotNull(at?.let { dateOf(it) }, "그날의 도착 인사").joinToString(" · ")), lp(top = 36))
         page.addView(MbUi.text(c, 44f, tone.text, bold = true, s = j?.greeting ?: "도착 기록이 없습니다"), lp(top = 8))
@@ -523,11 +592,320 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         return card
     }
 
+    // ── 전국 지도 (P01~P08, 5-H) ──
+
+    private fun isWide() = ((sheet.parent as View).width) >= dp(c, 1200)
+
+    private fun dots(r: Records) = r.parkPoints.map { p ->
+        KoreaMapView.Dot(p.id, p.lat, p.lon, p.visitCount, tone.dot(r.colorOf(p.id)))
+    }
+
+    /** 지금 쪽에서 강조할 원 — 근처 장소 목록이면 그 묶음 전체, 방문 기록이면 그 장소 */
+    private fun selectedIds(): Set<Long> = when (val p = stack.lastOrNull()) {
+        is Page.Cluster -> if (p.all) emptySet() else p.ids.toSet()
+        is Page.Place -> setOf(p.id)
+        else -> emptySet()
+    }
+
+    /** 단독 화면: 지도 흐름 안에 있는 동안 판 왼쪽을 지도가 채운다. 그 밖에서는 숨긴다 */
+    private fun updateBigMap() {
+        val show = isWide() && stack.contains(Page.MapHome)
+        if (!show) {
+            if (bigMap.visibility == View.VISIBLE && !sheetClosing) { bigMap.stopRing(); Motion.snap(bigMap); bigMap.visibility = View.GONE }
+            return
+        }
+        val w = (sheet.parent as View).width - dp(c, 640)
+        if (bigMap.layoutParams.width != w) bigMap.layoutParams = FrameLayout.LayoutParams(w, -1, Gravity.START)
+        bigMap.compact = false
+        bigMap.set(tone, dots(deps.records), selectedIds())
+        if (bigMap.visibility != View.VISIBLE) {
+            bigMap.visibility = View.VISIBLE
+            Motion.enter(bigMap) // 옅게 나타남. 판은 오른쪽에서 들어온다
+        }
+        maybeRing(bigMap)
+    }
+
+    /** 오늘 도착한 장소의 원에 테두리를 한 번 퍼뜨린다 — 이번 도착에 한 번만 (30번 6.5) */
+    private fun maybeRing(map: KoreaMapView) {
+        val jid = arrivalJourneyId ?: return
+        if (ringShownFor == jid || stack.lastOrNull() != Page.MapHome) return
+        val pid = deps.records.journey(jid)?.parkPointId ?: return
+        ringShownFor = jid
+        map.post { map.playRing(pid) }
+    }
+
+    /** 내비 옆 분할 — 판 안에 지도를 넣는다. 한 뷰를 다시 쓰므로 먼저 떼어 낸다 */
+    private fun placeInline(compact: Boolean): KoreaMapView {
+        (inlineMap.parent as? ViewGroup)?.removeView(inlineMap)
+        inlineMap.compact = compact
+        inlineMap.set(tone, dots(deps.records), selectedIds())
+        inlineMap.background = if (compact) MbUi.rounded(tone.mapBg, dp(c, 16).toFloat()) else null
+        inlineMap.clipToOutline = compact
+        return inlineMap
+    }
+
+    private fun onMapTap(ids: List<Long>) {
+        if (!parked || ids.isEmpty()) return
+        renamingPlace = null; deletingPlace = null
+        while (stack.isNotEmpty() && stack.last() != Page.MapHome) stack.removeLast()
+        if (stack.isEmpty()) stack.addLast(Page.MapHome)
+        stack.addLast(if (ids.size == 1) Page.Place(ids[0]) else Page.Cluster(ids))
+        render(Dir.FORWARD)
+        scroll.scrollTo(0, 0)
+    }
+
+    private fun placeTitle(p: Records.ParkPoint) = p.label ?: "방문 ${p.visitCount}회"
+
+    private fun placeMeta(p: Records.ParkPoint) =
+        if (p.label != null) "방문 ${p.visitCount}회 · 최근 ${shortDate(p.lastAt)}" else "최근 ${shortDate(p.lastAt)}"
+
+    private fun withPencil(t: TextView) {
+        val d = androidx.core.content.ContextCompat.getDrawable(c, com.milebloom.app.R.drawable.mb_pencil)?.mutate() ?: return
+        val s = (t.textSize * 0.8f).toInt()
+        d.setBounds(0, 0, s, s)
+        d.setTint(t.currentTextColor)
+        t.setCompoundDrawables(d, null, null, null)
+        t.compoundDrawablePadding = dp(c, 10)
+    }
+
+    /** 단독: 판에 안내 / 분할: 머리줄 + 큰 지도 + 아래 버튼 (P01·P03) */
+    private fun renderMapHome() {
+        val r = deps.records
+        val outside = r.parkPoints.count { !MapGeo.inRange(it.lat, it.lon) }
+        val note = when {
+            r.parkPoints.isEmpty() && !deps.keepParkPoints -> "설정의 '주차한 곳 남기기'가 꺼져 있어 원이 생기지 않습니다."
+            r.parkPoints.isEmpty() -> "아직 차를 세운 곳이 없어요. 기어를 P에 놓으면 그 자리에 원이 하나 남아요."
+            outside > 0 -> "지도 범위 밖에 세운 곳 ${outside}곳은 원으로 그리지 않았어요. 장소 목록에는 있어요."
+            else -> null
+        }
+        if (isWide()) {
+            backTo(prevLabel())
+            title("전국 지도", "차를 세운 곳에 원이 하나씩 남아요")
+            val legend = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            legend.addView(View(c).apply { background = MbUi.rounded(tone.dot(r.journeys.lastOrNull { it.colorArgb != null }?.colorArgb), dp(c, 20).toFloat()) },
+                LinearLayout.LayoutParams(dp(c, 40), dp(c, 40)).apply { marginEnd = dp(c, 20) })
+            legend.addView(MbUi.text(c, 28f, tone.text, s = "자주 머문 곳일수록 커져요"))
+            page.addView(legend, lp(top = 40))
+            page.addView(MbUi.text(c, 24f, tone.sub, s = "10번째 방문부터는 크기가 같아요"), lp(top = 12))
+            page.addView(MbUi.text(c, 28f, tone.text, bold = true, s = "원을 눌러 그곳의 기록을 보세요"), lp(top = 56))
+            page.addView(MbUi.text(c, 24f, tone.sub, s = "겹친 원은 근처 장소 목록으로 먼저 열려요"), lp(top = 12))
+            if (note != null) page.addView(MbUi.text(c, 24f, tone.text, s = note), lp(top = 40))
+            val row = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
+            if (r.parkPoints.isNotEmpty()) smallPill(row, "장소 목록 ${r.parkPoints.size}곳") { push(Page.Cluster(r.parkPoints.map { it.id }, all = true)) }
+            smallPill(row, "음성 기록 전체") { push(Page.VoiceList) }
+            page.addView(row, lp(top = 48))
+            return
+        }
+        // 분할: 머리줄(뒤로 + 제목) → 지도 → 안내와 버튼
+        val head = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        page.addView(head, LinearLayout.LayoutParams(-1, -2))
+        val before = page.childCount
+        backTo(prevLabel())
+        val back = page.getChildAt(before); page.removeView(back)
+        head.addView(back, LinearLayout.LayoutParams(-2, dp(c, MbUi.SMALL_PILL_H)))
+        head.addView(MbUi.text(c, 36f, tone.text, bold = true, s = "전국 지도"), LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(c, 24) })
+        if (note != null) page.addView(MbUi.text(c, 24f, tone.text, s = note), lp(top = 20))
+        val avail = (sheet.parent as View).height
+        val used = dp(c, 36 + MbUi.SMALL_PILL_H + 16 + 16 + MbUi.SMALL_PILL_H + 48 + 24) + if (note != null) dp(c, 90) else 0
+        page.addView(placeInline(compact = false), LinearLayout.LayoutParams(-1, maxOf(dp(c, 300), avail - used)).apply { topMargin = dp(c, 16) })
+        maybeRing(inlineMap)
+        val foot = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        foot.addView(MbUi.text(c, 24f, tone.sub, s = "원을 눌러 그곳의\n기록을 보세요"), LinearLayout.LayoutParams(0, -2, 1f))
+        if (r.parkPoints.isNotEmpty()) smallPill(foot, "장소 목록") { push(Page.Cluster(r.parkPoints.map { it.id }, all = true)) }
+        smallPill(foot, "음성 기록 전체") { push(Page.VoiceList) }
+        page.addView(foot, lp(top = 16))
+    }
+
+    private fun smallPill(row: LinearLayout, label: String, bold: Boolean = false, onCard: Boolean = false, onClick: () -> Unit): TextView {
+        // 카드 안의 버튼은 판 색으로 — 카드와 같은 색이면 버튼이 보이지 않는다
+        val b = MbUi.pill(c, label, if (onCard) tone.panel else tone.card(null), tone.text, bold = bold, heightDp = MbUi.SMALL_PILL_H, sp = 26f, onClick = onClick)
+        b.minWidth = dp(c, 120)
+        b.setPadding(dp(c, 30), 0, dp(c, 30), 0)
+        row.addView(b, LinearLayout.LayoutParams(-2, dp(c, MbUi.SMALL_PILL_H)).apply { if (row.childCount > 0) marginStart = dp(c, 14) })
+        return b
+    }
+
+    /** 분할 화면의 목록·방문 기록 머리: 뒤로 버튼 왼쪽, 작은 지도 오른쪽 위 (P06·P08) */
+    private fun headWithSmallMap() {
+        if (isWide()) { backTo(prevLabel()); return }
+        val head = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP }
+        page.addView(head, LinearLayout.LayoutParams(-1, -2))
+        val before = page.childCount
+        backTo(prevLabel())
+        val back = page.getChildAt(before); page.removeView(back)
+        head.addView(back, LinearLayout.LayoutParams(-2, dp(c, MbUi.SMALL_PILL_H)))
+        head.addView(View(c), LinearLayout.LayoutParams(0, 1, 1f))
+        head.addView(placeInline(compact = true), LinearLayout.LayoutParams(dp(c, 170), dp(c, 190)))
+    }
+
+    /** 근처 장소 목록 (P05·P06) — 방문 횟수·최근 방문일·대표 색. 이름은 사용자가 붙인 것만 (D-042) */
+    private fun renderCluster(p: Page.Cluster) {
+        val r = deps.records
+        val places = p.ids.mapNotNull { r.parkPoint(it) }.sortedWith(compareByDescending<Records.ParkPoint> { it.visitCount }.thenByDescending { it.lastAt })
+        headWithSmallMap()
+        if (p.all) title("장소 ${places.size}곳", "방문이 많은 곳부터. 이름은 직접 붙인 것만 보여요")
+        else title("이 근처 ${places.size}곳", "원이 겹쳐 있어요. 장소를 고르세요")
+        if (places.isEmpty()) {
+            rule()
+            page.addView(MbUi.text(c, 28f, tone.text, s = "남은 장소가 없습니다."), lp(top = 32))
+            return
+        }
+        places.forEach { pt ->
+            rule(top = if (pt === places.first()) 24 else 0)
+            page.addView(listRow(tone.dot(r.colorOf(pt.id)), placeTitle(pt), placeMeta(pt), strongMeta = false, pencil = pt.label != null) {
+                renamingPlace = null; deletingPlace = null
+                push(Page.Place(pt.id))
+            })
+        }
+        rule(top = 0)
+    }
+
+    /** 고른 장소의 방문 기록 (P07·P08) — 음성 기록이 있던 날은 개수 제한 없이, 방문은 최근 10회 (D-042) */
+    private fun renderPlace(id: Long) {
+        val r = deps.records
+        val pt = r.parkPoint(id)
+        headWithSmallMap()
+        if (pt == null) {
+            page.addView(MbUi.text(c, 28f, tone.text, s = "지운 장소입니다."), lp(top = 36))
+            return
+        }
+        val visits = r.journeysAt(id)
+        // 제목: 대표 색 점 + 이름(직접 붙인 것) 또는 방문 횟수
+        val head = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        head.addView(View(c).apply { background = MbUi.rounded(tone.dot(r.colorOf(id)), dp(c, 24).toFloat()) },
+            LinearLayout.LayoutParams(dp(c, 48), dp(c, 48)).apply { marginEnd = dp(c, 24) })
+        val col = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(MbUi.text(c, 36f, tone.text, bold = true, s = placeTitle(pt)).apply { if (pt.label != null) withPencil(this) })
+        col.addView(MbUi.text(c, 24f, tone.sub, s = if (pt.label != null) placeMeta(pt) else "이름 없는 장소 · ${placeMeta(pt)}"), lp(top = 8))
+        head.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
+        page.addView(head, lp(top = 32))
+
+        when (id) {
+            renamingPlace -> renameBox(pt)
+            deletingPlace -> deleteBox(pt, visits.size)
+            else -> {
+                val row = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
+                withPencil(smallPill(row, if (pt.label == null) "이름 붙이기" else "이름 고치기") {
+                    renamingPlace = id; renameDraft = pt.label.orEmpty(); deletingPlace = null; render()
+                })
+                smallPill(row, "이 장소 지우기") { deletingPlace = id; renamingPlace = null; render() }
+                page.addView(row, lp(top = 28))
+            }
+        }
+
+        val voiced = visits.filter { j -> r.memos.any { it.journeyId == j.id } }
+        if (voiced.isNotEmpty()) {
+            page.addView(MbUi.text(c, 28f, tone.text, bold = true, s = "음성 기록이 있던 날"), lp(top = 44))
+            voiced.forEachIndexed { i, j ->
+                if (i > 0) rule(top = 0)
+                page.addView(dateRow(j, "${r.memosOf(j.id).size}개"), LinearLayout.LayoutParams(-1, -2))
+            }
+        }
+        val recent = visits.take(RECENT_VISITS)
+        page.addView(MbUi.text(c, 28f, tone.text, bold = true, s = "최근 방문 ${recent.size}회"), lp(top = 44))
+        if (recent.isEmpty()) {
+            page.addView(MbUi.text(c, 24f, tone.sub, s = "남은 방문 기록이 없습니다."), lp(top = 12))
+            return
+        }
+        // 두 줄씩 — 날짜를 누르면 그날 (P07의 격자)
+        recent.chunked(2).forEach { pair ->
+            val line = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
+            pair.forEach { j ->
+                val cell = MbUi.text(c, 26f, tone.sub, s = dateOf(j.endedAt!!)).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    minHeight = dp(c, MbUi.SMALL_PILL_H)
+                    background = MbUi.rounded(0x00000000, dp(c, 12).toFloat(), tone.text)
+                    isClickable = true
+                    setOnClickListener { push(Page.Day(j.id)) }
+                }
+                line.addView(cell, LinearLayout.LayoutParams(0, -2, 1f))
+            }
+            if (pair.size == 1) line.addView(View(c), LinearLayout.LayoutParams(0, 1, 1f))
+            page.addView(line, LinearLayout.LayoutParams(-1, -2))
+        }
+        if (visits.size > RECENT_VISITS) page.addView(MbUi.text(c, 24f, tone.sub, s = "그보다 오래된 방문 ${visits.size - RECENT_VISITS}회는 음성 기록이 있던 날만 위에 남겨 둡니다."), lp(top = 12))
+    }
+
+    private fun dateRow(j: Records.Journey, right: String): View {
+        val row = LinearLayout(c).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(c, 88)
+            background = MbUi.rounded(0x00000000, 0f, tone.text)
+            isClickable = true
+            setOnClickListener { push(Page.Day(j.id)) }
+        }
+        row.addView(View(c).apply { background = MbUi.rounded(tone.dot(j.colorArgb), dp(c, 12).toFloat()) },
+            LinearLayout.LayoutParams(dp(c, 24), dp(c, 24)).apply { marginEnd = dp(c, 20) })
+        row.addView(MbUi.text(c, 28f, tone.text, s = dateOf(j.endedAt!!)), LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(MbUi.text(c, 24f, tone.sub, s = right))
+        row.addView(MbUi.text(c, 36f, tone.sub, s = "›"), LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(c, 16) })
+        return row
+    }
+
+    private fun renameBox(pt: Records.ParkPoint) {
+        val card = LinearLayout(c).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(c, 28), dp(c, 28), dp(c, 28), dp(c, 24))
+            background = MbUi.rounded(tone.card(null), dp(c, 24).toFloat())
+        }
+        val edit = EditText(c).apply {
+            setText(renameDraft)
+            hint = "예: 단골 카페"
+            setHintTextColor(tone.sub)
+            typeface = MbUi.regular(c)
+            textSize = 28f
+            setTextColor(tone.text)
+            isSingleLine = true
+            filters = arrayOf(android.text.InputFilter.LengthFilter(Records.LABEL_MAX))
+            background = MbUi.rounded(tone.panel, dp(c, 16).toFloat())
+            setPadding(dp(c, 20), dp(c, 16), dp(c, 20), dp(c, 16))
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, d: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, d: Int) = Unit
+                override fun afterTextChanged(s: Editable?) { renameDraft = s?.toString().orEmpty() }
+            })
+        }
+        card.addView(edit, LinearLayout.LayoutParams(-1, -2))
+        card.addView(MbUi.text(c, 24f, tone.sub, s = "직접 붙인 이름만 보여요. 주소나 장소 종류는 앱이 찾지 않습니다."), lp(top = 12))
+        val row = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
+        fun done(label: String?) { hideKeyboard(); renamingPlace = null; deps.renamePlace(pt.id, label); render() }
+        smallPill(row, "저장", bold = true, onCard = true) { done(renameDraft) }
+        if (pt.label != null) smallPill(row, "이름 지우기", onCard = true) { done(null) }
+        smallPill(row, "취소", onCard = true) { renamingPlace = null; hideKeyboard(); render() }
+        card.addView(row, lp(top = 20))
+        page.addView(card, lp(top = 28))
+        edit.post { edit.requestFocus(); edit.setSelection(edit.text.length); showKeyboard(edit) }
+    }
+
+    private fun deleteBox(pt: Records.ParkPoint, visits: Int) {
+        val card = LinearLayout(c).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(c, 28), dp(c, 28), dp(c, 28), dp(c, 24))
+            background = MbUi.rounded(tone.card(null), dp(c, 24).toFloat())
+        }
+        card.addView(MbUi.text(c, 28f, tone.text, bold = true, s = "이 장소를 지도에서 지웁니다."))
+        card.addView(MbUi.text(c, 24f, tone.text, s = "방문 ${visits}회의 도착지 표시와 이름이 함께 사라집니다. 음성 기록과 풍경은 남습니다. 되돌릴 수 없습니다."), lp(top = 10))
+        val row = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
+        smallPill(row, "지우기", bold = true, onCard = true) {
+            deletingPlace = null
+            deps.deletePlace(pt.id)
+            // 지운 장소의 쪽을 닫는다. 근처 장소 목록에서 왔으면 남은 장소로, 하나도 없으면 지도로
+            if (stack.lastOrNull() == Page.Place(pt.id)) stack.removeLast()
+            val top = stack.lastOrNull()
+            if (top is Page.Cluster && top.ids.none { deps.records.parkPoint(it) != null }) stack.removeLast()
+            if (stack.isEmpty()) closeSheet() else { render(Dir.BACK); scroll.scrollTo(0, 0) }
+        }
+        smallPill(row, "취소", onCard = true) { deletingPlace = null; render() }
+        card.addView(row, lp(top = 20))
+        page.addView(card, lp(top = 28))
+    }
+
     // ── 설정 (D-030) ──
 
     private fun renderSettings() {
         val r = deps.records
-        backTo("오늘의 숲")
+        backTo(prevLabel())
         title("설정", null)
 
         settingRow(
@@ -606,6 +984,7 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
     // ───────────── 글 ─────────────
 
     private fun dateOf(ms: Long): String = SimpleDateFormat("M월 d일 (E)", Locale.KOREAN).format(Date(ms))
+    private fun shortDate(ms: Long): String = SimpleDateFormat("M월 d일", Locale.KOREAN).format(Date(ms))
 
     /** 장소 이름은 사용자가 붙인 것만. 없으면 방문 횟수가 제목이다 (D-042) */
     private fun placeOf(r: Records, j: Records.Journey?): String {
@@ -630,5 +1009,7 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         const val BUTTONS_AFTER_GROW_MS = 300L
         /** 도착 사건 뒤 기어 P 반영을 기다리는 한도 */
         const val PENDING_ARRIVAL_MS = 3_000L
+        /** 장소의 방문 기록에 보이는 최근 방문 수 (D-042) */
+        const val RECENT_VISITS = 10
     }
 }

@@ -251,6 +251,8 @@ class MainActivity : AppCompatActivity() {
         override fun editMemo(id: Long, text: String) = app.records.update { it.editMemo(id, text) }
         override fun deleteMemo(id: Long) = app.records.update { it.deleteMemo(id) }
         override fun clearAll() = app.clearAllRecords()
+        override fun renamePlace(id: Long, label: String?) = app.records.update { it.renameParkPoint(id, label) }
+        override fun deletePlace(id: Long) = app.records.update { it.deleteParkPoint(id) }
         override var ambientLink: Boolean
             get() = app.ambient.linkEnabled
             set(v) = app.ambient.setLinkEnabled(v)
@@ -322,6 +324,7 @@ class MainActivity : AppCompatActivity() {
      * - sun·month는 다음 P의 오늘의 색에도 적용된다
      * - ambientLink false — 설정의 '실내 조명 연동' 끔(D-053): 사용자 원래 색으로 되돌린다
      * - memo "글" — 음성 인식 없이 음성 기록 한 줄을 지금(주차 중이면 마지막) 주행에 넣는다. 에뮬레이터에서 STT를 쓸 수 없을 때 시연용
+     * - demoPlaces true — **시연용 장소 주입**: 전국 9곳·방문 36회의 가짜 도착 기록(거리 0, 풍경 불변)을 넣는다. 실측 아님 (5-H, [com.milebloom.app.record.DemoPlaces])
      * - uxActive N — 플랫폼 activeRestrictions 대신 N을 쓴다 (D-081, 에뮬레이터에서 제한 강화를 못 일으킬 때). -1이면 해제
      */
     private fun registerSceneDebugReceiver() {
@@ -345,6 +348,7 @@ class MainActivity : AppCompatActivity() {
                 val month = i.getIntExtra("month", 0)
                 if (month in 1..12) app.monthOverride = month
                 if (i.getBooleanExtra("forestReset", false)) app.debugResetForest()
+                if (i.getBooleanExtra("demoPlaces", false)) app.debugAddDemoPlaces()
                 if (i.hasExtra("km")) app.debugAddKm(i.getFloatExtra("km", 0f))
                 if (i.hasExtra("wheel")) scene.wheelSpin = i.getBooleanExtra("wheel", true)
                 i.getStringExtra("car")?.let { name -> CarModel.entries.find { it.name == name }?.let { scene.carModel = it } }

@@ -14,6 +14,7 @@ import android.widget.TextView
 import androidx.core.content.res.ResourcesCompat
 import androidx.core.graphics.ColorUtils
 import com.milebloom.app.R
+import com.milebloom.app.ambient.Oklch
 import com.milebloom.app.render.MbPalette
 import com.milebloom.app.render.Season
 import com.milebloom.app.render.Tone
@@ -54,6 +55,16 @@ class UiTone(val night: Boolean, val season: Season) {
         hsv[2] = if (night) 0.66f else 0.86f
         return android.graphics.Color.HSVToColor(hsv)
     }
+
+    // ── 전국 지도 (30번 6.5, D-071) ──
+    private val memory = MbPalette.scene.getValue(season).getValue(if (night) Tone.MEMORY_NIGHT else Tone.MEMORY_DAY)
+    /** 지도 바탕 `skyLow` */
+    val mapBg: Int = memory.skyLow
+    /** 실루엣: `ground`를 흰색 쪽으로 낮 30% · 밤 12%(OKLCH L 0.41에서 자름) */
+    val mapLand: Int = if (night) Oklch.capLightness(ColorUtils.blendARGB(memory.ground, 0xFFFFFFFF.toInt(), 0.12f), 0.41)
+        else ColorUtils.blendARGB(memory.ground, 0xFFFFFFFF.toInt(), 0.30f)
+    /** 누른 원 테두리: 낮 흰색 · 밤 `uiText` */
+    val mapSelect: Int = if (night) text else 0xFFFFFFFF.toInt()
 }
 
 object MbUi {
