@@ -34,6 +34,8 @@ import kotlin.math.sin
  * - 풍경은 **실제 차 속도와 무관한 등속**으로 오른쪽 → 왼쪽으로 흐른다. 근경 0.03H/초가 가장 빠르다
  * - 차선·점선·속도선·바퀴 회전·날갯짓·반딧불 점멸을 **그리지 않는다.** 차는 움직이지 않는다
  * - 새 요소·계절·성장 단계 변경은 주행 중에 적용하지 않는다 — [state]·[carModel]은 기어 P에서 반영된다
+ * - 도착(P) 때 [growInto]로 받은 풍경은 '오늘 생긴 요소'만 하나씩 0.8초에 걸쳐 밑단에서 자라난다 (30번 6.4, D-087).
+ *   D로 바꾸면 남은 연출 없이 바로 다 자란 모습이다
  * - 낮↔밤 20초 교차 혼합, 헤드램프·창문 1초, D 진입 즉시 주행 톤 / P 진입 1.5초
  * - D에서 정차하면 흐름이 [FLOW_STOP_SEC]초에 걸쳐 서서히 멈추고, 출발하면 [FLOW_RESUME_SEC]초에 걸쳐 다시 흐른다
  *   (D-061·D-064). 흐름/멈춤 두 상태뿐 — 속도에 비례하지 않는다. 정차 신호가 없으면(권한 거부 등) 계속 흐른다.
@@ -49,9 +51,38 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
 
     var snapshot: VehicleSnapshot = VehicleSnapshot()
 
-    /** 쌓인 풍경. 주행 중에 바뀌면 다음 P에서 적용한다 */
-    var state: SceneState = SceneState.demo()
-        set(value) { field = value; pendingState = true }
+    /** 쌓인 풍경. 주행 중에 바뀌면 다음 P에서 적용한다 (앱을 켠 뒤 첫 값만은 바로 적용). 연출 없이 바뀐다 */
+    var state: SceneState
+        get() = target
+        set(value) {
+            if (value == target) return
+            target = value
+            pendingState = true
+            growAt = null
+        }
+    private var target: SceneState = SceneState.empty()
+
+    /**
+     * 도착 연출과 함께 풍경을 바꾼다 (30번 6.4 '약 4초 ~'). 지금 보이는 풍경에 없던 요소만 [startElapsedMs]부터
+     * 0.15초 간격으로 하나씩 0.8초에 걸쳐 자란다. 사라지는 싹은 같은 시간에 줄어든다.
+     * 계획이 서면 [onGrowthPlanned]로 끝 시각을 알린다.
+     * @param startElapsedMs `SystemClock.elapsedRealtime()` 기준
+     */
+    fun growInto(value: SceneState, startElapsedMs: Long) {
+        if (value == appliedState && !pendingState) {
+            // 이미 연출 없이 바뀌었다(값이 먼저 들어온 경우) — 바로 전 풍경을 기준으로 다시 계획한다
+            val prev = previousState ?: return onGrowthPlanned(startElapsedMs)
+            if (SystemClock.elapsedRealtime() - appliedAtMs > 2_000) return onGrowthPlanned(startElapsedMs)
+            appliedState = prev
+            rebuildLayout(width, height)
+        }
+        target = value
+        pendingState = true
+        growAt = startElapsedMs
+    }
+
+    /** 도착 연출 계획의 끝 시각(elapsedRealtime). 자랄 것이 없으면 시작 시각 그대로 */
+    var onGrowthPlanned: (endElapsedMs: Long) -> Unit = {}
 
     /** 차종 (D-058, 고르기 전 기본 아반떼). 주행 중에는 바뀌지 않는다 */
     var carModel: CarModel = CarModel.AVANTE
@@ -88,8 +119,18 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
 
     // ───────────── 현재 적용 중인 것 ─────────────
 
-    private var appliedState: SceneState = state
+    private var appliedState: SceneState = target
     private var pendingState = false
+    /** 앱을 켠 뒤 저장된 풍경을 한 번이라도 적용했나. 첫 값은 주행 중이어도 바로 쓴다 — 아니면 빈 숲으로 달린다 */
+    private var firstApplied = false
+    private var previousState: SceneState? = null
+    private var appliedAtMs = 0L
+    private var growAt: Long? = null
+
+    /** 도착 연출 중인 요소: 키 → (시작 시각, 시작 배율, 사라지는 중인가) */
+    private class Grow(val startMs: Long, val from: Float, val leave: Boolean)
+    private val growing = HashMap<Int, Grow>()
+    private var growEndMs = 0L
     private var pendingCar = false
     private var car = CarSprite(CarShapes.of(carModel))
     private var layout: SceneLayout? = null
@@ -105,6 +146,7 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
     private var glassW = FloatArray(4)
     private var snapped = false
 
+    private var growNow = 0L      // 이번 프레임의 elapsedRealtime (도착 연출용)
     private var flowTime = 0f     // 흐름이 진행된 '등속 초'
     private var clock = 0f        // 흔들림·떠다님용 시계(초)
     private var lastStepNs = 0L
@@ -200,12 +242,13 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
     private fun step(dt: Float) {
         val journey = mode == AppMode.JOURNEY
 
+        if (pendingState && journey && !firstApplied && width > 0) {
+            // 주행 중에 앱을 켰다 — 저장된 풍경을 바로 쓴다. 새로 생긴 것이 아니라 이미 있던 것이다
+            applyState(null)
+        }
+        if (journey && growing.isNotEmpty()) finishGrowth()
         if (!journey && (pendingState || pendingCar)) {
-            if (pendingState) {
-                appliedState = state
-                rebuildLayout(width, height)
-                pendingState = false
-            }
+            if (pendingState && width > 0) applyState(growAt)
             if (pendingCar) {
                 car = CarSprite(CarShapes.of(carModel))
                 glassW = FloatArray(4)
@@ -268,6 +311,77 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
         clearW = approach(clearW, if (clearZone != null && !journey) 1f else 0f, dt / 0.8f)
         val night = darkW >= 0.5f
         if (night != isNight) { isNight = night; onNightChanged(night) }
+    }
+
+    /** [target]을 적용한다. [startMs]가 있으면 바뀐 요소에 도착 연출을 건다 */
+    private fun applyState(startMs: Long?) {
+        val old = layout
+        previousState = appliedState
+        appliedState = target
+        appliedAtMs = SystemClock.elapsedRealtime()
+        pendingState = false
+        growAt = null
+        finishGrowth()
+        rebuildLayout(width, height)
+        val now = layout
+        firstApplied = true
+        if (startMs != null) {
+            val end = if (old != null && now != null) planGrowth(old, now, startMs) else startMs
+            Log.i(TAG, "도착 연출: 새 요소 ${growing.count { !it.value.leave }}개, 줄어드는 것 ${growing.count { it.value.leave }}개, " +
+                "${end - startMs} ms (stage ${previousState?.stage} → ${appliedState.stage})")
+            onGrowthPlanned(end)
+        }
+    }
+
+    /**
+     * 새로 보이는 것(키가 없던 것)과 커진 것(어린 나무 → 나무)에 시작 시각을 매긴다. 숲 → 들판 → 생물 순서.
+     * 간격은 0.15초, 다만 들판이 한 번에 많이 차면 전체가 2.4초를 넘지 않게 좁힌다 (주차 중 연출이 길어지지 않게).
+     */
+    private fun planGrowth(old: SceneLayout, now: SceneLayout, startMs: Long): Long {
+        val oldPlaced = HashMap<Int, Placed>()
+        (old.mid + old.near).forEach { oldPlaced[it.key] = it }
+        val oldDrift = (old.fireflies + old.fluffs).map { it.key }.toHashSet()
+        val fresh = ArrayList<Pair<Int, Float>>()   // 키, 시작 배율
+        for (p in now.mid) {
+            val o = oldPlaced[p.key]
+            if (o == null) fresh += p.key to 0f else if (p.size > o.size * 1.05f) fresh += p.key to o.size / p.size
+        }
+        if (now.streamX >= 0f && old.streamX < 0f) fresh += K_STREAM to 0f
+        for (p in now.near) if (p.key !in oldPlaced) fresh += p.key to 0f
+        for (d in now.fireflies + now.fluffs) if (d.key !in oldDrift) fresh += d.key to 0f
+        if (appliedState.moon && previousState?.moon != true) fresh += K_MOON to 0f
+        // 줄어드는 것 — 새 배치에 없는 근경 요소(싹이 풀에 자리를 내줌). 다 줄면 목록에서 뺀다
+        val nowKeys = (now.mid + now.near).map { it.key }.toHashSet()
+        val leaving = (old.mid + old.near).filter { it.key !in nowKeys }
+        for (p in leaving) {
+            if (p.key in old.mid.map { it.key }) now.mid += p else now.near += p
+            growing[p.key] = Grow(startMs, 1f, leave = true)
+        }
+        now.near.sortBy { it.baseY }
+        if (fresh.isEmpty()) {
+            growEndMs = if (leaving.isEmpty()) startMs else startMs + GROW_MS
+            return growEndMs
+        }
+        val gap = if (fresh.size <= 1) 0L else min(GROW_GAP_MS, GROW_SPREAD_MS / (fresh.size - 1))
+        fresh.forEachIndexed { i, (k, from) -> growing[k] = Grow(startMs + i * gap, from, leave = false) }
+        growEndMs = startMs + (fresh.size - 1) * gap + GROW_MS
+        return growEndMs
+    }
+
+    /** 연출을 끝낸다 — 자라던 것은 다 자란 모습, 줄던 것은 뺀다 */
+    private fun finishGrowth() {
+        if (growing.isEmpty()) return
+        val gone = growing.filterValues { it.leave }.keys
+        layout?.let { l -> l.mid.removeAll { it.key in gone }; l.near.removeAll { it.key in gone } }
+        growing.clear()
+    }
+
+    /** 도착 연출 진행도. 1 = 다 자람(또는 연출 없음), 0 = 아직 안 보임 */
+    private fun grown(key: Int, nowMs: Long): Float {
+        val g = growing[key] ?: return 1f
+        val t = ((nowMs - g.startMs).toFloat() / GROW_MS).coerceIn(0f, 1f)
+        val e = (1f - cos(PI.toFloat() * t)) / 2f
+        return if (g.leave) 1f - e else g.from + (1f - g.from) * e
     }
 
     private fun approach(v: Float, target: Float, maxStep: Float) =
@@ -372,6 +486,8 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
 
         val lay = layout ?: return
         val st = appliedState
+        growNow = SystemClock.elapsedRealtime()
+        if (growing.isNotEmpty() && growNow > growEndMs) finishGrowth()
         resolvePalette(st)
         val w = width.toFloat()
         val H = lay.H
@@ -407,11 +523,12 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
             canvas.drawCircle(sx, H * 0.15f, H * 0.035f, fill)
         }
         if (st.moon && darkW > 0.01f) {
-            // 달 + 둘레 (1.7배, 0.08)
+            // 달 + 둘레 (1.7배, 0.08). 오늘 생긴 달은 천천히 떠오르듯 나타난다
+            val g = grown(K_MOON, growNow)
             fill.color = cCelestial
-            fill.alpha = (0.08f * darkW * 255).toInt()
+            fill.alpha = (0.08f * darkW * g * 255).toInt()
             canvas.drawCircle(sx, H * 0.15f, H * 0.035f * 1.7f, fill)
-            fill.alpha = (darkW * 255).toInt()
+            fill.alpha = (darkW * g * 255).toInt()
             canvas.drawPath(moon, fill)
         }
         drawBand(canvas, lay.clouds, lay.cloudLen, flowTime * 0.002f * H, sway = false)
@@ -507,13 +624,16 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
                 if (clear != null && x + p.size * 0.6f > clear.left && x - p.size * 0.6f < clear.right &&
                     p.baseY > clear.top && p.baseY - p.size < clear.bottom) keep = 1f - clearW
                 if (keep <= 0.01f) { x += len; continue }
+                // 도착 연출: 밑단(원점)을 중심으로 0 → 1 배율로 자란다
+                val g = if (growing.isEmpty()) 1f else grown(p.key, growNow)
+                if (g <= 0.01f) { x += len; continue }
                 canvas.save()
                 canvas.translate(x, p.baseY)
                 if (sway && p.swayPeriod > 0f) {
                     // 기울기 ±2° 이하, 주기 8초 이상, 이웃끼리 위상 다르게 (30번 6.2)
                     canvas.rotate(2f * sin(2f * PI.toFloat() * clock / p.swayPeriod + p.swayPhase))
                 }
-                canvas.scale(if (p.flip) -p.size else p.size, p.size)
+                canvas.scale(if (p.flip) -p.size * g else p.size * g, p.size * g)
                 for (part in p.shape.parts) {
                     fill.color = color(p.colors, part.slot)
                     if (part.alpha < 1f || keep < 1f) fill.alpha = (part.alpha * keep * 255).toInt()
@@ -546,15 +666,21 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
         x -= lay.midLen * floor((x + lay.streamLen) / lay.midLen)
         val y0 = lay.treeBaseY - H * 0.016f
         val y1 = lay.treeBaseY - H * 0.002f
+        val g = grown(K_STREAM, growNow)
+        if (g <= 0.01f) return
+        val fade = (g * 255).toInt()
         while (x < width) {
             fill.color = mix(cStream, cGround, 0.5f)
+            fill.alpha = fade
             tmpRect.set(x - H * 0.01f, y0 - H * 0.003f, x + lay.streamLen + H * 0.01f, y1 + H * 0.002f)
             canvas.drawRoundRect(tmpRect, H * 0.012f, H * 0.012f, fill)
             fill.color = cStream
+            fill.alpha = fade
             tmpRect.set(x, y0, x + lay.streamLen, y1)
             canvas.drawRoundRect(tmpRect, H * 0.008f, H * 0.008f, fill)
             // 물 위 가로 빛 띠 3개 — 반짝이지 않는다 (D-062)
             fill.color = cStreamLight
+            fill.alpha = fade
             for (f in floatArrayOf(0.18f, 0.47f, 0.78f)) {
                 val bx = x + lay.streamLen * f
                 tmpRect.set(bx, y0 + H * 0.004f, bx + H * 0.05f, y0 + H * 0.0075f)
@@ -577,7 +703,7 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
                 x -= lay.nearLen * floor((x + 20f * dp) / lay.nearLen)
                 while (x - 20f * dp < w) {
                     fill.color = cGlow
-                    val k = keepOutside(x, y, 12f * dp)
+                    val k = keepOutside(x, y, 12f * dp) * grown(f.key, growNow)
                     fill.alpha = (0.25f * darkW * k * 255).toInt()
                     canvas.drawCircle(x, y, 12f * dp, fill)
                     fill.alpha = (darkW * k * 255).toInt()
@@ -601,7 +727,7 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
                 canvas.scale(size, size)
                 for (part in shape.parts) {
                     fill.color = cCloud
-                    fill.alpha = (0.9f * part.alpha * keepOutside(x, y, size) * 255).toInt()
+                    fill.alpha = (0.9f * part.alpha * keepOutside(x, y, size) * grown(f.key, growNow) * 255).toInt()
                     canvas.drawPath(part.path, fill)
                 }
                 canvas.restore()
@@ -636,6 +762,13 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
 
     private companion object {
         const val TAG = "MBREN"
+
+        /** 도착 연출 (30번 6.4): 요소 하나가 자라는 시간, 다음 요소까지 간격, 간격을 좁힐 때 전체 상한 */
+        const val GROW_MS = 800L
+        const val GROW_GAP_MS = 150L
+        const val GROW_SPREAD_MS = 2_400L
+        const val K_STREAM = 9_000
+        const val K_MOON = 9_001
         val SLOTS = Slot.entries.size
 
         /** 정차 판정 후 흐름이 멈추는 시간(초) — 30번 6.2-B (D-064). 곡선은 사인 이징 인-아웃 */

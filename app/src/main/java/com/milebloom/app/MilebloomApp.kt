@@ -7,7 +7,11 @@ import android.os.SystemClock
 import com.milebloom.app.ambient.AmbientDirector
 import com.milebloom.app.ambient.ArrivalGreeting
 import com.milebloom.app.ambient.JourneyTally
+import com.milebloom.app.record.Forest
+import com.milebloom.app.record.RecordCodec
 import com.milebloom.app.record.RecordStore
+import com.milebloom.app.render.SceneState
+import com.milebloom.app.ambient.TodayColor
 import com.milebloom.app.location.ParkLocator
 import com.milebloom.app.mode.ModeController
 import com.milebloom.app.mode.ModeEvent
@@ -54,6 +58,19 @@ class MilebloomApp : Application() {
     private val _arrival = MutableStateFlow<Arrival?>(null)
     val arrival: StateFlow<Arrival?> = _arrival.asStateFlow()
 
+    /**
+     * 화면이 그릴 쌓인 풍경. [growAtElapsedMs]가 있으면 그 P 체결에서 자란 것이다 — 화면이 '오늘 생긴 요소' 연출을 한다.
+     * 주행 중에 바뀐 값은 렌더러가 다음 P까지 미룬다
+     */
+    data class SceneInput(val state: SceneState, val growAtElapsedMs: Long?)
+
+    private val _scene = MutableStateFlow(SceneInput(SceneState.empty(), null))
+    val scene: StateFlow<SceneInput> = _scene.asStateFlow()
+
+    /** debug 시연용: 들판의 달을 바꿔 보여 준다. 저장된 풍경은 그대로다 */
+    var monthOverride: Int? = null
+        set(v) { field = v; ambient.monthOverride = v; publishScene(null) }
+
     private val prefs by lazy { getSharedPreferences("milebloom", Context.MODE_PRIVATE) }
 
     /** 설정 '주차한 곳 남기기' (D-030 위치 기록 중단). 끄면 P 지점을 조회하지 않는다 */
@@ -83,8 +100,16 @@ class MilebloomApp : Application() {
         )
         signals.snapshot.onEach { s -> ambient.onSnapshot(System.currentTimeMillis(), s) }.launchIn(appScope)
 
-        // 주행 시작·끝을 기록하고, P 체결 때 도착 인사를 정하고 P 지점 한 점을 남긴다 (12번 13.6, D-082).
-        // 숲 성장 저장은 아직 없다(5-B) — 화면의 숲은 시연용 고정값이다.
+        // 새달 첫 승차면 들판을 새로 시작한다 (12번 13.6). 마지막 오늘의 색을 되살린다 (D-087)
+        records.update { it.copy(forest = it.forest.rollMonth(monthKeyNow())) }
+        records.current.forest.today?.let { t -> ambient.restoreToday(TodayColor(t.hue, t.sat, t.value)) }
+        publishScene(null)
+        records.current.forest.let { f ->
+            Log.i(TAG_FOREST, "풍경 읽음: 누적 ${f.totalDistKm} km · growth ${f.totalGrowth} · 이번 달 ${f.meadowGrowth} · 요소 ${f.elements.size}" +
+                if (f.debugKm > 0f) " · debug 주입 ${f.debugKm} km" else "")
+        }
+
+        // 주행 시작·끝을 기록하고, P 체결 때 도착 인사를 정하고 풍경을 키우고 P 지점 한 점을 남긴다 (12번 13.6, D-082·D-087).
         modes.events.onEach { e ->
             val now = System.currentTimeMillis()
             ambient.onEvent(now, e)
@@ -101,8 +126,23 @@ class MilebloomApp : Application() {
                     val tally = ambient.lastTally ?: JourneyTally.Result(0f, 0f, 1f)
                     val line = ArrivalGreeting.of(tally, e.distKm)
                     Log.i(TAG, "도착 인사 \"$line\" (stops=${tally.stops} dist=${e.distKm})")
-                    if (id != null) records.update { it.endJourney(id, now, e.distKm, ambient.today.value?.ambientArgb, line) }
-                    _arrival.value = Arrival(id, line, SystemClock.elapsedRealtime())
+                    val c = ambient.today.value
+                    val before = records.current.forest
+                    records.update {
+                        it.arrive(
+                            id, now, monthKeyNow(), e.distKm,
+                            Forest.Signs(tally.rain, tally.rainLv, tally.night, tally.wind, tally.guests), tally.stops,
+                            c?.let { t -> Forest.Today(t.hue, t.sat, t.ambientValue) }, c?.ambientArgb, line,
+                        )
+                    }
+                    val after = records.current.forest
+                    Log.i(TAG_FOREST, "P 체결: 거리 ${e.distKm} km → growth +${after.totalGrowth - before.totalGrowth}, " +
+                        "누적 ${after.totalDistKm} km, 단계 ${before.stage} → ${after.stage}, 새 요소 " +
+                        after.elements.filter { it.journeyId == id && id != null }.joinToString { "${it.type}×${it.count}" }.ifEmpty { "없음" } +
+                        " (rain=${tally.rain} rainLv=${tally.rainLv} night=${tally.night} wind=${tally.wind} guests=${tally.guests})")
+                    val at = SystemClock.elapsedRealtime()
+                    publishScene(at)
+                    _arrival.value = Arrival(id, line, at)
                     if (!keepParkPoints) {
                         Log.i(TAG, "주차한 곳 남기기 꺼짐 — 좌표를 조회하지 않음")
                     } else appScope.launch {
@@ -113,6 +153,35 @@ class MilebloomApp : Application() {
                 }
             }
         }.launchIn(appScope)
+    }
+
+    private fun monthKeyNow() = RecordCodec.monthKeyOf(System.currentTimeMillis())
+
+    /** 저장된 풍경 → 화면 입력. @param growAt 도착 연출을 할 P 체결 시각(elapsedRealtime), 아니면 null */
+    fun publishScene(growAt: Long?) {
+        val f = records.current.forest
+        val month = monthOverride ?: (Calendar.getInstance().get(Calendar.MONTH) + 1)
+        _scene.value = SceneInput(SceneState.of(f.seed, f.view(monthKeyNow()), month), growAt)
+    }
+
+    /** 기록 모두 지우기 (D-030). 풍경은 남는다 (D-087) */
+    fun clearAllRecords() {
+        records.update { it.clearAll(currentJourneyId) }
+        publishScene(null)
+    }
+
+    /** debug 시연용: 주행 없이 누적 거리를 더한다 (시작 상태 만들기). 실측과 구분해 [Forest.debugKm]에 남는다 */
+    fun debugAddKm(km: Float) {
+        records.update { it.copy(forest = it.forest.debugAddKm(km, monthKeyNow())) }
+        Log.i(TAG_FOREST, "debug 거리 주입 +$km km → 누적 ${records.current.forest.totalDistKm} km (debug ${records.current.forest.debugKm} km)")
+        publishScene(null)
+    }
+
+    /** debug 시연용: 풍경을 처음 설치한 상태로 (시드는 유지). 주행·장소·음성 기록은 그대로 */
+    fun debugResetForest() {
+        records.update { it.copy(forest = Forest(seed = it.forest.seed, meadowMonthKey = monthKeyNow())) }
+        Log.i(TAG_FOREST, "debug 풍경 초기화")
+        publishScene(null)
     }
 
     /** 음성 기록 한 줄을 지금 주행에 묶는다. 주행 중이 아니면 마지막 주행에 (debug 주입용) */
@@ -145,6 +214,7 @@ class MilebloomApp : Application() {
 
     private companion object {
         const val TAG = "MBMODE"
+        const val TAG_FOREST = "MBFOREST"
         const val KEY_KEEP_PARK = "keep_park_points"
     }
 }

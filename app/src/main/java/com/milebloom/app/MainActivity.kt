@@ -99,6 +99,8 @@ class MainActivity : AppCompatActivity() {
             scene.setRenderEffect(if (on) RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP) else null)
         }
         overlay.onHomeBounds = { rect -> scene.clearZone = rect }
+        // 오늘 생긴 요소가 다 자란 뒤에 버튼을 연다 (30번 6.4 '그 뒤 기록 열람')
+        scene.onGrowthPlanned = { end -> overlay.holdButtonsUntil(end) }
         scene.onNightChanged = { applyTone() }
         if (isDebuggable()) {
             addDebugOverlay(root)
@@ -141,6 +143,14 @@ class MainActivity : AppCompatActivity() {
                 }
                 launch {
                     app.ambient.today.collect { c -> scene.today = c }
+                }
+                launch {
+                    // 쌓인 풍경 (D-087). 방금 P 체결에서 자란 것이면 4초 뒤부터 그것만 자라나게, 아니면 연출 없이
+                    app.scene.collect { si ->
+                        val at = si.growAtElapsedMs
+                        if (at != null && SystemClock.elapsedRealtime() - at < FRESH_ARRIVAL_MS) scene.growInto(si.state, at + GROW_DELAY_MS)
+                        else scene.state = si.state
+                    }
                 }
                 launch {
                     app.records.records.collect { overlay.onRecordsChanged() }
@@ -239,7 +249,7 @@ class MainActivity : AppCompatActivity() {
         override fun confirmMemo(id: Long) = app.records.update { it.confirmMemo(id) }
         override fun editMemo(id: Long, text: String) = app.records.update { it.editMemo(id, text) }
         override fun deleteMemo(id: Long) = app.records.update { it.deleteMemo(id) }
-        override fun clearAll() = app.records.update { it.clearAll(app.currentJourneyId) }
+        override fun clearAll() = app.clearAllRecords()
         override var ambientLink: Boolean
             get() = app.ambient.linkEnabled
             set(v) = app.ambient.setLinkEnabled(v)
@@ -298,9 +308,12 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * 시연·녹화용 풍경 조작 (debug 빌드 전용). 예:
-     * `adb shell am broadcast -a com.milebloom.app.SCENE --es sun down --ei stage 7 --es car TUCSON --ei month 4 --ez hud false`
+     * `adb shell am broadcast --user 10 -a com.milebloom.app.SCENE --es sun down --es car TUCSON --ei month 4 --ez hud false`
      * - sun: up | down | auto — 낮 시간대에 밤을, 밤에 낮을 보여 줄 때 (헤드램프는 Virtual Console로)
-     * - stage 1..7, month 1..12, car GRANDEUR|AVANTE|TUCSON — 주행 중에 보내면 다음 P에서 적용된다
+     * - month 1..12, car GRANDEUR|AVANTE|TUCSON — 주행 중에 보내면 다음 P에서 적용된다. month는 저장된 풍경을 바꾸지 않는다
+     * - km 60.5 — 주행 없이 누적 거리를 더한다(시연 시작 상태). 기록에 debug 거리로 따로 남는다. 숲 단계가 그만큼 바뀐다
+     * - forestReset true — 풍경을 처음 설치한 상태로 (주행·장소·음성 기록은 그대로)
+     * - 실제 주행 거리는 Virtual Console `POST /vehicle/odometer?traveled_distance_km=N`으로 넣는다 (SDK 경로 그대로)
      * - hud false — 신호 패널을 숨긴다 (화면 녹화용)
      * - wheel true|false — 바퀴 회전 시험(D-063) 켜고 끄기. 사용자 비교용
      * - sun·month는 다음 P의 오늘의 색에도 적용된다
@@ -326,15 +339,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 i.getStringExtra("memo")?.let { t -> Log.i(TAG, "debug 음성 기록 주입 \"$t\" → ${app.addVoiceMemo(t)}") }
                 if (i.hasExtra("ambientLink")) app.ambient.setLinkEnabled(i.getBooleanExtra("ambientLink", true))
-                val stage = i.getIntExtra("stage", 0)
                 val month = i.getIntExtra("month", 0)
-                if (month in 1..12) app.ambient.monthOverride = month
-                if (stage in 1..7 || month in 1..12) {
-                    scene.state = scene.state.copy(
-                        stage = if (stage in 1..7) stage else scene.state.stage,
-                        month = if (month in 1..12) month else scene.state.month,
-                    )
-                }
+                if (month in 1..12) app.monthOverride = month
+                if (i.getBooleanExtra("forestReset", false)) app.debugResetForest()
+                if (i.hasExtra("km")) app.debugAddKm(i.getFloatExtra("km", 0f))
                 if (i.hasExtra("wheel")) scene.wheelSpin = i.getBooleanExtra("wheel", true)
                 i.getStringExtra("car")?.let { name -> CarModel.entries.find { it.name == name }?.let { scene.carModel = it } }
                 if (i.hasExtra("hud")) {
@@ -424,6 +432,8 @@ class MainActivity : AppCompatActivity() {
         const val ACTION_SCENE = "com.milebloom.app.SCENE"
         /** 이보다 늦게 화면에 돌아오면 도착 연출·소리 없이 인사만 둔다 */
         const val FRESH_ARRIVAL_MS = 10_000L
+        /** P 체결 뒤 '오늘 생긴 요소'가 자라기 시작하는 때 (30번 6.4 '약 4초 ~') */
+        const val GROW_DELAY_MS = 4_000L
         const val VOICE_TIMEOUT_MS = 15_000L
     }
 }

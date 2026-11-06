@@ -3,6 +3,7 @@ package com.milebloom.app.ui
 import android.app.Activity
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -119,6 +120,7 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         if (!p) {
             // 연출·판·편집을 모두 거둔다. 남은 연출은 다음 P로 넘기지 않는다
             main.removeCallbacksAndMessages(null)
+            buttonsPending = false
             deps.stopSpeaking()
             hideKeyboard()
             stack.clear()
@@ -127,8 +129,15 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
             home.visibility = View.GONE
             return
         }
+        // 도착 사건이 기어 P 반영보다 먼저 왔으면 여기서 연출을 시작한다 (순서는 수집 순서에 따라 바뀐다)
+        val a = pendingArrival
+        pendingArrival = null
+        if (a != null && SystemClock.elapsedRealtime() - a.second < PENDING_ARRIVAL_MS) { runArrival(a.first); return }
         showHome(animate = false)
     }
+
+    /** 아직 parked가 아닐 때 온 도착 연출 (줄, 받은 시각) */
+    private var pendingArrival: Pair<String, Long>? = null
 
     fun setTone(t: UiTone) {
         if (t.night == tone.night && t.season == tone.season) return
@@ -154,8 +163,15 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         stack.clear()
         sheet.visibility = View.GONE
         main.removeCallbacksAndMessages(null)
-        if (!parked) return
+        if (!parked) {
+            pendingArrival = if (fresh) line to SystemClock.elapsedRealtime() else null
+            return
+        }
         if (!fresh) { showHome(animate = false); return }
+        runArrival(line)
+    }
+
+    private fun runArrival(line: String) {
         // 0 ~ 1.5초: 풍경이 주차 톤으로 넘어가는 동안 비워 둔다 (30번 6.4)
         home.visibility = View.VISIBLE
         greeting.alpha = 0f
@@ -166,11 +182,30 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
             greeting.animate().alpha(1f).setDuration(600).start()
             deps.speak(line)
         }, 1_500)
-        // 약 4초 ~: 시안의 '오늘 생긴 요소' 자리. 요소 연출은 아직 없어 그 뒤 버튼만 연다
-        main.postDelayed({
-            buttonRow.visibility = View.VISIBLE
-            buttonRow.animate().alpha(1f).setDuration(500).start()
-        }, 4_000)
+        // 약 4초 ~: 오늘 생긴 요소가 풍경에서 자란다(LandscapeView). 버튼은 그것이 끝난 뒤에 연다 — 끝 시각은 [holdButtonsUntil]
+        arrivalAt = SystemClock.elapsedRealtime()
+        buttonsPending = true
+        sheet.visibility = View.GONE
+        main.postDelayed(openButtons, maxOf(BUTTONS_MIN_MS, holdUntil - arrivalAt))
+    }
+
+    private var arrivalAt = 0L
+    private var holdUntil = 0L
+    private var buttonsPending = false
+
+    private val openButtons = Runnable {
+        buttonsPending = false
+        buttonRow.visibility = View.VISIBLE
+        buttonRow.animate().alpha(1f).setDuration(500).start()
+    }
+
+    /** 도착 연출이 [endElapsedMs](elapsedRealtime)에 끝난다. 아직 버튼을 열지 않았으면 그때까지 미룬다 */
+    fun holdButtonsUntil(endElapsedMs: Long) {
+        holdUntil = endElapsedMs
+        if (!buttonsPending) return
+        main.removeCallbacks(openButtons)
+        val now = SystemClock.elapsedRealtime()
+        main.postDelayed(openButtons, maxOf(arrivalAt + BUTTONS_MIN_MS - now, endElapsedMs + BUTTONS_AFTER_GROW_MS - now, 0L))
     }
 
     fun onRecordsChanged() {
@@ -491,11 +526,11 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         settingRow("음성 기록", "${r.memos.size}개 · 소리는 저장하지 않습니다", "보기") { push(Page.VoiceList) }
 
         if (!clearing) {
-            settingRow("기록 모두 지우기", "주차한 곳과 음성 기록을 모두 지웁니다.", "지우기") { clearing = true; render() }
+            settingRow("기록 모두 지우기", "주차한 곳과 음성 기록을 모두 지웁니다. 풍경은 남습니다.", "지우기") { clearing = true; render() }
         } else {
             rule(top = 0)
             page.addView(MbUi.text(c, 28f, tone.text, bold = true, s = "기록 모두 지우기"), lp(top = 28))
-            page.addView(MbUi.text(c, 24f, tone.text, s = "주차한 곳 ${r.parkPoints.size}곳과 음성 기록 ${r.memos.size}개를 지웁니다. 되돌릴 수 없습니다."), lp(top = 8))
+            page.addView(MbUi.text(c, 24f, tone.text, s = "주차한 곳 ${r.parkPoints.size}곳과 음성 기록 ${r.memos.size}개를 지웁니다. 되돌릴 수 없습니다. 풍경은 그대로 남습니다."), lp(top = 8))
             val row = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
             listOf("모두 지우기" to true, "취소" to false).forEach { (label, yes) ->
                 val b = MbUi.pill(c, label, tone.card(null), tone.text, bold = yes, heightDp = MbUi.SMALL_PILL_H, sp = 26f) {
@@ -550,5 +585,14 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
     private fun hideKeyboard() {
         val imm = c.getSystemService(Activity.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(sheet.windowToken, 0)
+    }
+
+    private companion object {
+        /** P 체결 뒤 버튼이 가장 빨리 열리는 때 — 자랄 것이 없는 날 (30번 6.4 '약 4초') */
+        const val BUTTONS_MIN_MS = 4_000L
+        /** 마지막 요소가 다 자란 뒤 버튼까지 */
+        const val BUTTONS_AFTER_GROW_MS = 300L
+        /** 도착 사건 뒤 기어 P 반영을 기다리는 한도 */
+        const val PENDING_ARRIVAL_MS = 3_000L
     }
 }

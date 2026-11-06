@@ -10,7 +10,7 @@ import kotlin.math.sqrt
  *
  * - 경로는 저장하지 않는다. 위치는 **P 체결 지점 하나**뿐이다 (D-005)
  * - 음성 기록은 **텍스트만** 저장하고, 녹음 위치를 두지 않는다. 그 주행의 도착지에 묶인다 (D-042)
- * - 숲 성장(`landscape_state`·`landscape_element`)은 아직 없다 — 5-B 몫
+ * - 쌓인 풍경([Forest] = `landscape_state`·`landscape_element`)도 같은 파일에 둔다 (D-087)
  *
  * 불변 값이다. 바꾸는 함수는 새 [Records]를 돌려준다. 안드로이드 의존 없음 (단위 테스트 가능).
  */
@@ -19,6 +19,7 @@ data class Records(
     val parkPoints: List<ParkPoint> = emptyList(),
     val memos: List<VoiceMemo> = emptyList(),
     val nextId: Long = 1L,
+    val forest: Forest = Forest(seed = 0L),
 ) {
     data class Journey(
         val id: Long,
@@ -31,6 +32,11 @@ data class Records(
         /** 그날의 도착 인사 한 줄 */
         val greeting: String? = null,
         val parkPointId: Long? = null,
+        /** 이 주행이 더한 성장량 (12번 13.1 growthDelta) */
+        val growth: Float = 0f,
+        /** P 체결 때 한 번 저장한 신호 집계 (12번 13.1). 주행 중에는 메모리에만 있다 */
+        val signs: Forest.Signs? = null,
+        val stops: Int = 0,
     )
 
     data class ParkPoint(
@@ -78,6 +84,23 @@ data class Records(
     }
 
     /**
+     * P 체결 — 주행을 닫고 풍경을 키운다 (12번 13.6). 이미 닫힌 주행이면 풍경을 두 번 키우지 않는다.
+     * 주행 기록이 없으면(주행 중에 앱이 켜져 시작을 못 봤다) 풍경도 키우지 않는다 — 그 주행의 시작 거리를 모른다.
+     * 오늘의 색은 그래도 남긴다.
+     */
+    fun arrive(
+        journeyId: Long?, at: Long, monthKey: String, distKm: Float, signs: Forest.Signs, stops: Int,
+        today: Forest.Today?, colorArgb: Int?, greeting: String?,
+    ): Records {
+        val j = journey(journeyId)
+        if (j == null || j.endedAt != null) return copy(forest = forest.rollMonth(monthKey).let { if (today != null) it.copy(today = today) else it })
+        val grown = forest.grow(j.id, at, monthKey, distKm, signs, today)
+        val done = j.copy(endedAt = at, distKm = distKm, colorArgb = colorArgb, greeting = greeting,
+            growth = grown.totalGrowth - forest.totalGrowth, signs = signs, stops = stops)
+        return copy(journeys = journeys.map { if (it.id == j.id) done else it }, forest = grown)
+    }
+
+    /**
      * P 지점을 그 주행의 도착지로 남긴다 — 반경 200 m 안의 기존 점이면 새 점을 만들지 않고 방문 횟수만 올린다.
      * 이미 도착지가 있는 주행이면 바꾸지 않는다.
      */
@@ -120,10 +143,14 @@ data class Records(
 
     fun deleteMemo(id: Long) = copy(memos = memos.filterNot { it.id == id })
 
-    /** 전체 초기화 (D-030). 진행 중인 주행 하나는 남긴다 — 그 주행에 남길 말이 갈 곳이 있어야 한다 */
+    /**
+     * 전체 초기화 (D-030). 진행 중인 주행 하나는 남긴다 — 그 주행에 남길 말이 갈 곳이 있어야 한다.
+     * 풍경은 남긴다 — 장소·글·시각이 없는 그림이다. 요소가 어느 주행에서 언제 생겼는지만 끊는다 (D-087)
+     */
     fun clearAll(keepJourneyId: Long?): Records = Records(
         journeys = journeys.filter { it.id == keepJourneyId }.map { it.copy(parkPointId = null) },
         nextId = nextId,
+        forest = forest.forgetJourneys(),
     )
 
     companion object {

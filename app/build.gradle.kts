@@ -63,6 +63,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     testImplementation(libs.junit)
+    // 기록 파일 왕복 시험용. 안드로이드의 org.json은 단위 테스트에서 빈 껍데기라 실제 구현을 넣는다 (앱에는 들어가지 않는다)
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
 

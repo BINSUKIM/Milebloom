@@ -5,7 +5,7 @@ import java.util.Calendar
 /**
  * 풍경을 그리는 데 필요한 '쌓인 결과' (docs/12-idea-v2.md 13.2·13.3을 렌더러가 쓰는 만큼만 줄인 것).
  *
- * 5-B가 저장소(`landscape_state`·`landscape_element`)에서 이 값을 만들어 넘긴다. 그 전까지는 [demo]를 쓴다.
+ * 저장된 풍경(`record/Forest`)에서 [of]로 만든다 (D-087). 시연용 고정값은 없다.
  * 렌더러는 이 값을 **기어 P에서만** 바꿔 적용한다 — 주행 중에는 '사건'이 없다 (30번 2.6·6.1-3).
  */
 data class SceneState(
@@ -33,18 +33,16 @@ data class SceneState(
         }
 
     companion object {
-        /** 5-B 전까지 쓰는 시연용 풍경: 5단계 숲 + 만개한 이번 달 들판 + 비·밤·창문·동승자 흔적 */
-        fun demo(month: Int = Calendar.getInstance().get(Calendar.MONTH) + 1) = SceneState(
-            seed = 20261115L,
-            stage = 5,
-            month = month,
-            meadowGrowth = 25f,
-            stream = true,
-            puddles = 2,
-            fireflies = 4,
-            moon = true,
-            seedFluff = 3,
-            birds = 2,
+        /** 저장된 풍경 → 렌더러 입력. @param month 들판의 달 1..12 */
+        fun of(seed: Long, v: com.milebloom.app.record.Forest.View, month: Int) = SceneState(
+            seed = seed, stage = v.stage, month = month, meadowGrowth = v.meadowGrowth, stream = v.stream,
+            puddles = v.puddles, fireflies = v.fireflies, moon = v.moon, seedFluff = v.seedFluff, birds = v.birds,
+        )
+
+        /** 기록을 읽기 전 첫 프레임용. 처음 설치한 풍경과 같은 모습(1단계, 새싹 들판) */
+        fun empty(month: Int = Calendar.getInstance().get(Calendar.MONTH) + 1) = SceneState(
+            seed = 0L, stage = 1, month = month, meadowGrowth = 0f, stream = false,
+            puddles = 0, fireflies = 0, moon = false, seedFluff = 0, birds = 0,
         )
     }
 }

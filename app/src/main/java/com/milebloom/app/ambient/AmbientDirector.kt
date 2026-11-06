@@ -48,6 +48,14 @@ class AmbientDirector(
     /** 이번 P 체결의 오늘의 색. 앱을 켠 뒤 첫 P 체결 전에는 null */
     val today: StateFlow<TodayColor?> = _today.asStateFlow()
 
+    /**
+     * 앱을 다시 켰을 때 저장해 둔 마지막 오늘의 색을 되살린다 — 하늘 물들임·Lv3 색이 첫 P 전에도 이어진다 (D-074에서 남긴 일, D-087).
+     * 실내 조명에는 쓰지 않는다 (set은 P 체결 한 곳뿐). 이미 이번 실행에서 정해졌으면 덮지 않는다
+     */
+    fun restoreToday(c: TodayColor) {
+        if (_today.value == null) _today.value = c
+    }
+
     /** 마지막 P 체결의 집계. 도착 인사([ArrivalGreeting])가 쓴다 */
     var lastTally: JourneyTally.Result? = null
         private set
