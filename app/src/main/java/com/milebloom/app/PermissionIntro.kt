@@ -3,89 +3,184 @@ package com.milebloom.app
 import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.text.LineBreakConfig
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
-import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.graphics.ColorUtils
 import com.milebloom.app.location.ParkLocator
-import com.milebloom.app.vehicle.Gear
-import com.milebloom.app.vehicle.VehicleSnapshot
+import com.milebloom.app.render.Season
+import com.milebloom.app.ui.MbUi
+import com.milebloom.app.ui.MbUi.dp
+import com.milebloom.app.ui.UiTone
 
 /**
- * 첫 실행 권한 안내 — **기어 P에서, 한 번만** (D-061, 13번 17-1).
+ * 첫 실행 권한 안내 — **기어 P에서** 풍경 위 카드 한 장 (D-061·D-080·D-083).
  *
  * 런타임 권한 2개(P 지점 좌표 `FUSED_LOCATION`, 정차 판별 `CAR_SPEED`)를 한 흐름으로 묻는다.
- * 대화상자 문구가 용도와 다르게 나오므로('위치 정보'·'알 수 없는 작업', 5-C 실측) 이유를 한 줄 먼저 보여 준다.
- * 주행 중(DO 요구)에는 띄우지 않고, P로 돌아오면 다시 보인다. 거부해도 앱은 동작한다 — 다시 묻지 않는다.
+ * 시스템 창 문구가 용도와 다르게 나오므로(속도 → '위치 정보', Pleos 위치 → '알 수 없는 작업', 5-C 실측)
+ * 묻기 전에 무엇에 쓰는지와 창에 보일 문구를 먼저 알린다. 실차 문구는 미확인이라 '보일 수 있습니다' (D-080).
  *
- * 화면 디자인은 자리표시다. 주차 화면(4-C·5-E)이 정식 온보딩을 만들면 교체한다.
+ * - 주행 중(DO 요구)·기어 P가 아닐 때는 보이지 않는다
+ * - '나중에'는 이번 실행 동안만 미룬다. 다음에 앱을 켜고 P이면 다시 보인다
+ * - 한 번 답했으면 다시 띄우지 않는다. 거부했으면 무엇이 달라지는지 한 번 알리고, 다시 켜는 길은 설정 화면에 둔다
+ * - 거부해도 앱은 동작한다: 주차한 곳이 남지 않고, 차가 서도 풍경이 계속 흐른다
  */
 class PermissionIntro(private val activity: Activity, root: FrameLayout) {
 
     private val prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-    private val view: View
-
-    init {
-        val dp = activity.resources.displayMetrics.density
-        val reason = TextView(activity).apply {
-            // 에뮬레이터 실측: CAR_SPEED는 '위치 정보에 액세스', Pleos FUSED_LOCATION은 '알 수 없는 작업 실행'으로 표시된다
-            // 낯선 문구 때문에 거부하면 다시 묻지 않으므로 미리 알린다. 실차 문구는 미확인이라 '보일 수 있지만' (D-080)
-            text = "권한 창이 두 번 뜹니다. 주차한 곳을 남기고, 차가 서면 풍경도 쉬어 가게 하는 데 씁니다. 창에 '알 수 없는 작업'이라고 보일 수 있지만 Pleos 위치 권한입니다."
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 28f)
-            setTextColor(0xFF2F3A35.toInt()) // uiText MD (30번 2.7)
-            gravity = Gravity.CENTER
-            lineBreakWordStyle = LineBreakConfig.LINE_BREAK_WORD_STYLE_PHRASE // 어절 중간에서 줄을 나누지 않는다
-        }
-        val ok = Button(activity).apply {
-            text = "계속"
-            isAllCaps = false
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 28f)
-            minHeight = (88 * dp).toInt()
-            minWidth = (200 * dp).toInt()
-            setOnClickListener { request() }
-        }
-        view = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding((48 * dp).toInt(), (120 * dp).toInt(), (48 * dp).toInt(), 0)
-            addView(reason)
-            addView(ok, LinearLayout.LayoutParams(-2, -2).apply { topMargin = (32 * dp).toInt() })
-            visibility = View.GONE
-        }
-        root.addView(view, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+    private val layer = FrameLayout(activity).apply {
+        isClickable = true // 카드 밖을 눌러도 뒤의 버튼이 눌리지 않게
+        visibility = View.GONE
     }
 
-    private fun missing(): List<String> = PERMISSIONS.filter {
+    /** 카드가 떠 있는 동안 뒤 풍경을 흐리게 하는 일 — 화면이 맡는다(풍경 뷰에 흐림 효과) */
+    var onBackdrop: (Boolean) -> Unit = {}
+    private val card = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+    private var tone = UiTone(night = false, season = Season.AUTUMN)
+    private var parked = false
+    private var deferred = false
+    private var page = Page.NONE
+
+    private enum class Page { NONE, INTRO, RESULT }
+
+    /** 카드가 떠 있는 동안 주차 화면의 인사·버튼을 숨긴다 */
+    var onShowingChanged: (Boolean) -> Unit = {}
+    val isShowing: Boolean get() = layer.visibility == View.VISIBLE
+
+    init {
+        layer.addView(card, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER).apply {
+            val m = dp(activity, 40)
+            setMargins(m, m, m, m)
+        })
+        root.addView(layer, FrameLayout.LayoutParams(-1, -1))
+    }
+
+    fun missing(): List<String> = PERMISSIONS.filter {
         activity.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
     }
 
-    /** 신호가 바뀔 때마다 부른다. P이고 DO 요구가 없을 때만 보인다 */
-    fun onSnapshot(s: VehicleSnapshot) {
-        if (prefs.getBoolean(KEY_DONE, false)) { view.visibility = View.GONE; return }
-        if (missing().isEmpty()) { markDone(); view.visibility = View.GONE; return }
-        val parked = s.gear == Gear.PARK && s.uxRequiresDo != true
-        view.visibility = if (parked) View.VISIBLE else View.GONE
+    fun setTone(t: UiTone) {
+        if (t.night == tone.night && t.season == tone.season) return
+        tone = t
+        if (page != Page.NONE) build(page)
     }
 
-    private fun request() {
+    /** 신호가 바뀔 때마다 부른다. @param parkedNow 기어 P이고 DO 요구가 없다 */
+    fun onParked(parkedNow: Boolean) {
+        parked = parkedNow
+        if (parked && page == Page.NONE && !prefs.getBoolean(KEY_DONE, false) && !deferred) {
+            if (missing().isEmpty()) markDone() else build(Page.INTRO)
+        }
+        refresh()
+    }
+
+    /** 설정 화면의 '다시 묻기' */
+    fun askAgain() {
         val m = missing()
-        if (m.isEmpty()) { markDone(); view.visibility = View.GONE; return }
-        activity.requestPermissions(m.toTypedArray(), REQ)
+        if (m.isNotEmpty()) activity.requestPermissions(m.toTypedArray(), REQ_AGAIN)
     }
 
-    /** [Activity.onRequestPermissionsResult]에서 부른다. 허용·거부와 관계없이 한 번 물었으면 끝 */
+    /**
+     * [Activity.onRequestPermissionsResult]에서 부른다. 이 클래스가 물은 것이면 true.
+     * 허용·거부와 관계없이 한 번 답했으면 첫 안내는 끝이다.
+     */
     fun onResult(requestCode: Int): Boolean {
+        if (requestCode == REQ_AGAIN) return true
         if (requestCode != REQ) return false
         markDone()
-        view.visibility = View.GONE
+        if (missing().isEmpty()) close() else build(Page.RESULT)
         return true
     }
 
     private fun markDone() = prefs.edit().putBoolean(KEY_DONE, true).apply()
+
+    private fun close() {
+        page = Page.NONE
+        refresh()
+    }
+
+    private fun refresh() {
+        val show = page != Page.NONE && parked
+        val was = isShowing
+        layer.visibility = if (show) View.VISIBLE else View.GONE
+        // 뒤 풍경을 옅게 어둡혀 카드가 풍경과 섞이지 않게 한다 (흐림은 [onBackdrop])
+        layer.setBackgroundColor(if (tone.night) 0x59000000 else 0x33000000)
+        if (was != show) { onBackdrop(show); onShowingChanged(show) }
+    }
+
+    private fun build(p: Page) {
+        page = p
+        val c = activity
+        card.removeAllViews()
+        val pad = dp(c, 48)
+        card.setPadding(pad, dp(c, 44), pad, dp(c, 40))
+        card.background = MbUi.rounded(ColorUtils.setAlphaComponent(tone.panel, 0xF5), dp(c, 32).toFloat())
+        card.elevation = dp(c, 6).toFloat()
+        // 단독 화면에서는 너무 넓어지지 않게 가운데 760 dp로 묶는다
+        val maxW = dp(c, 760)
+        card.layoutParams = (card.layoutParams as FrameLayout.LayoutParams).apply {
+            width = if (layer.width > 0 && layer.width - dp(c, 80) <= maxW) -1 else maxW
+        }
+        if (p == Page.INTRO) buildIntro() else buildResult()
+        refresh()
+    }
+
+    private fun buildIntro() {
+        val c = activity
+        card.addView(MbUi.text(c, 36f, tone.text, bold = true, s = "권한 두 가지를 묻습니다"))
+        row("주차한 곳", "차를 세운 곳만 남깁니다. 지나온 길은 남기지 않습니다.", top = 32)
+        row("차가 섰는지", "차가 서면 풍경도 쉬어 가게 합니다. 속도는 저장하지 않습니다.", top = 24)
+        // D-080: 낯선 문구 때문에 거부하면 다시 묻지 않으므로 미리 알린다
+        val notice = MbUi.text(c, 24f, tone.text, s = "권한 창이 두 번 뜹니다. 속도는 ‘위치 정보’로, Pleos 위치 권한은 ‘알 수 없는 작업’으로 보일 수 있습니다.").apply {
+            val p = dp(c, 24)
+            setPadding(p, dp(c, 20), p, dp(c, 20))
+            background = MbUi.rounded(tone.card(null), dp(c, 20).toFloat())
+        }
+        card.addView(notice, lp(top = 32))
+        card.addView(MbUi.text(c, 24f, tone.sub, s = "허용하지 않아도 앱은 쓸 수 있습니다.\n설정에서 언제든 다시 켤 수 있습니다."), lp(top = 20))
+        buttons(
+            MbUi.pill(c, "계속", tone.text, tone.panel, bold = true) {
+                val m = missing()
+                if (m.isEmpty()) { markDone(); close() } else activity.requestPermissions(m.toTypedArray(), REQ)
+            },
+            MbUi.pill(c, "나중에", tone.card(null), tone.text) { deferred = true; close() },
+        )
+    }
+
+    private fun buildResult() {
+        val c = activity
+        val m = missing()
+        card.addView(MbUi.text(c, 36f, tone.text, bold = true, s = "꺼진 권한이 있습니다"))
+        val lines = buildList {
+            if (ParkLocator.PERMISSION in m) add("주차한 곳이 남지 않습니다.")
+            if (SPEED_PERMISSION in m) add("차가 서도 풍경이 계속 흐릅니다.")
+        }
+        card.addView(MbUi.text(c, 28f, tone.text, s = lines.joinToString("\n")), lp(top = 28))
+        card.addView(MbUi.text(c, 24f, tone.sub, s = "설정 › 위치·속도 권한에서 다시 켤 수 있습니다."), lp(top = 20))
+        buttons(MbUi.pill(c, "확인", tone.text, tone.panel, bold = true) { close() })
+    }
+
+    private fun row(label: String, body: String, top: Int) {
+        val c = activity
+        card.addView(MbUi.text(c, 28f, tone.text, bold = true, s = label), lp(top = top))
+        card.addView(MbUi.text(c, 24f, tone.sub, s = body), lp(top = 8))
+    }
+
+    private fun buttons(vararg b: TextView) {
+        val c = activity
+        val row = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
+        b.forEachIndexed { i, v ->
+            v.minWidth = dp(c, 200)
+            row.addView(v, LinearLayout.LayoutParams(-2, dp(c, MbUi.PILL_H)).apply {
+                if (i > 0) marginStart = dp(c, 16)
+            })
+        }
+        card.addView(row, lp(top = 36))
+    }
+
+    private fun lp(top: Int) = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(activity, top) }
 
     companion object {
         const val SPEED_PERMISSION = "android.car.permission.CAR_SPEED"
@@ -93,5 +188,6 @@ class PermissionIntro(private val activity: Activity, root: FrameLayout) {
         private const val PREFS = "milebloom"
         private const val KEY_DONE = "permission_intro_done"
         private const val REQ = 1
+        const val REQ_AGAIN = 2
     }
 }

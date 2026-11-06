@@ -73,6 +73,19 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
     /** 디버그·시연용: null = 해 계산(서울), true = 해 짐, false = 낮 */
     var sunDownOverride: Boolean? = null
 
+    /** 화면이 밤 쪽으로 반 넘게 넘어갔는가. 위에 얹는 글자·버튼이 낮/밤 색을 고르는 데 쓴다 */
+    var isNight: Boolean = false
+        private set
+
+    /**
+     * 주차 화면 글자·버튼 자리 (뷰 좌표). 주차 톤에서 이 안의 근경 요소(풀·꽃·새)를 서서히 지운다 — 시안처럼 글자 밑을 비운다 (32번 2.1).
+     * 배치·난수는 그대로라 나머지는 움직이지 않는다. null이면 지우지 않는다
+     */
+    var clearZone: android.graphics.RectF? = null
+
+    /** [isNight]가 바뀔 때 부른다 (메인 스레드) */
+    var onNightChanged: (Boolean) -> Unit = {}
+
     // ───────────── 현재 적용 중인 것 ─────────────
 
     private var appliedState: SceneState = state
@@ -88,6 +101,7 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
     private var flowW = 0f        // 흐름 배율 f = ease(flowP) (30번 6.2-B)
     private var wheelDeg = 0f
     private var lampW = 0f
+    private var clearW = 0f
     private var glassW = FloatArray(4)
     private var snapped = false
 
@@ -251,6 +265,9 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
         // 바퀴: 근경 흐름과 맞물린 각속도 × 같은 배율. 속도에 비례하지 않는다 (30번 6.2-A)
         wheelDeg = if (wheelSpin) (wheelDeg + dt * flowW * car.shape.wheelDegPerSec) % 360f else 0f
         clock += dt
+        clearW = approach(clearW, if (clearZone != null && !journey) 1f else 0f, dt / 0.8f)
+        val night = darkW >= 0.5f
+        if (night != isNight) { isNight = night; onNightChanged(night) }
     }
 
     private fun approach(v: Float, target: Float, maxStep: Float) =
@@ -447,7 +464,7 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
         fill.alpha = (0.7f * 255).toInt()
         canvas.drawRect(0f, lay.roadBottom, w, lay.roadBottom + H * 0.006f, fill)
         val nearOff = flowTime * 0.03f * H
-        drawBand(canvas, lay.near, lay.nearLen, nearOff, sway = true)
+        drawBand(canvas, lay.near, lay.nearLen, nearOff, sway = true, clear = if (clearW > 0.001f) clearZone else null)
         drawDrifters(canvas, lay, nearOff, H)
 
         // L5 야간 감광 — 주행 밤 톤에 검정 15% (30번 6.3)
@@ -478,13 +495,18 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
     }
 
     /** 띠 위 요소를 화면에 보이는 반복 위치마다 그린다. 흐름은 오른쪽 → 왼쪽 */
-    private fun drawBand(canvas: Canvas, list: List<Placed>, len: Float, offset: Float, sway: Boolean) {
+    private fun drawBand(canvas: Canvas, list: List<Placed>, len: Float, offset: Float, sway: Boolean, clear: android.graphics.RectF? = null) {
         val w = width.toFloat()
         for (p in list) {
             val half = p.size * 4.5f
             var x = mod(p.xBand * len - offset, len)
             x -= len * floor((x + half) / len)
             while (x - half < w) {
+                // 글자 자리와 겹치는 요소는 주차 톤으로 넘어가는 만큼 옅어진다
+                var keep = 1f
+                if (clear != null && x + p.size * 0.6f > clear.left && x - p.size * 0.6f < clear.right &&
+                    p.baseY > clear.top && p.baseY - p.size < clear.bottom) keep = 1f - clearW
+                if (keep <= 0.01f) { x += len; continue }
                 canvas.save()
                 canvas.translate(x, p.baseY)
                 if (sway && p.swayPeriod > 0f) {
@@ -494,7 +516,7 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
                 canvas.scale(if (p.flip) -p.size else p.size, p.size)
                 for (part in p.shape.parts) {
                     fill.color = color(p.colors, part.slot)
-                    if (part.alpha < 1f) fill.alpha = (part.alpha * 255).toInt()
+                    if (part.alpha < 1f || keep < 1f) fill.alpha = (part.alpha * keep * 255).toInt()
                     canvas.drawPath(part.path, fill)
                 }
                 canvas.restore()
@@ -555,9 +577,10 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
                 x -= lay.nearLen * floor((x + 20f * dp) / lay.nearLen)
                 while (x - 20f * dp < w) {
                     fill.color = cGlow
-                    fill.alpha = (0.25f * darkW * 255).toInt()
+                    val k = keepOutside(x, y, 12f * dp)
+                    fill.alpha = (0.25f * darkW * k * 255).toInt()
                     canvas.drawCircle(x, y, 12f * dp, fill)
-                    fill.alpha = (darkW * 255).toInt()
+                    fill.alpha = (darkW * k * 255).toInt()
                     canvas.drawCircle(x, y, 3f * dp, fill)
                     x += lay.nearLen
                 }
@@ -578,13 +601,20 @@ class LandscapeView(context: Context) : View(context), Choreographer.FrameCallba
                 canvas.scale(size, size)
                 for (part in shape.parts) {
                     fill.color = cCloud
-                    fill.alpha = (0.9f * part.alpha * 255).toInt()
+                    fill.alpha = (0.9f * part.alpha * keepOutside(x, y, size) * 255).toInt()
                     canvas.drawPath(part.path, fill)
                 }
                 canvas.restore()
                 x += lay.nearLen
             }
         }
+    }
+
+    /** 주차 화면 글자 자리([clearZone]) 안이면 주차 톤으로 넘어가는 만큼 옅어진다. 1 = 그대로 */
+    private fun keepOutside(x: Float, y: Float, r: Float): Float {
+        val z = clearZone ?: return 1f
+        if (clearW <= 0.001f) return 1f
+        return if (x + r > z.left && x - r < z.right && y + r > z.top && y - r < z.bottom) 1f - clearW else 1f
     }
 
     private fun mod(a: Float, m: Float): Float { val r = a % m; return if (r < 0f) r + m else r }

@@ -48,6 +48,10 @@ class AmbientDirector(
     /** 이번 P 체결의 오늘의 색. 앱을 켠 뒤 첫 P 체결 전에는 null */
     val today: StateFlow<TodayColor?> = _today.asStateFlow()
 
+    /** 마지막 P 체결의 집계. 도착 인사([ArrivalGreeting])가 쓴다 */
+    var lastTally: JourneyTally.Result? = null
+        private set
+
     /** 시연용(debug): 들판의 달을 바꿔 보여 줄 때 색도 그 달로 맞춘다 */
     var monthOverride: Int? = null
 
@@ -65,6 +69,7 @@ class AmbientDirector(
             is ModeEvent.JourneyEnded -> {
                 inJourney = false
                 val r = tally.finish(epochMs, e.distKm)
+                lastTally = r
                 val c = TodayColor.of(monthOverride ?: currentMonth(), r.rain, r.night, r.straight)
                 _today.value = c
                 log("오늘의 색 ${hex(c.ambientArgb)} (H=${c.hue} S=${c.sat} V=${c.ambientValue}, rain=${r.rain} night=${r.night} straight=${r.straight})")
@@ -98,7 +103,9 @@ class AmbientDirector(
 
     private fun set(argb: Int) = port.setColor(argb) { ok -> log("실내 조명 ${hex(argb)} ${if (ok) "적용" else "실패"}") }
 
-    /** 설정의 '실내 조명 연동' (D-053). 끄면 보관해 둔 사용자 원래 색으로 되돌린다. 화면은 5-E 몫 */
+    val linkEnabled: Boolean get() = store.linkEnabled
+
+    /** 설정의 '실내 조명 연동' (D-053). 끄면 보관해 둔 사용자 원래 색으로 되돌린다. 화면은 주차 화면 설정 */
     fun setLinkEnabled(enabled: Boolean) {
         store.linkEnabled = enabled
         if (enabled) return
