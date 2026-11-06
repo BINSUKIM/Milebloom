@@ -33,6 +33,15 @@ object Oklch {
         return if (l <= maxL) argb else fromLch(maxL, c, h)
     }
 
+    /** OKLCH 밝기 L (0~1) */
+    fun lightness(argb: Int): Double = toLch(argb).first
+
+    /** 밝기만 [l]로 바꾼다. 색상각·채도는 그대로 (지도 원 테두리, D-090) */
+    fun withLightness(argb: Int, l: Double): Int {
+        val (_, c, h) = toLch(argb)
+        return fromLch(l.coerceIn(0.0, 1.0), c, h)
+    }
+
     private fun toLch(argb: Int): Triple<Double, Double, Double> {
         fun lin(shift: Int): Double {
             val v = ((argb shr shift) and 0xFF) / 255.0

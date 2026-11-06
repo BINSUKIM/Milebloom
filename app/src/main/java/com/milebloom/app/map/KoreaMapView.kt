@@ -20,7 +20,7 @@ import kotlin.math.hypot
  *
  * - 내장 실루엣(K1) 위에 차를 세운 곳마다 원 하나. **선·경로·지명·도로 없음**, 원끼리 잇지 않는다 (D-005)
  * - 확대·끌기 없음. 누르면 [onTap]으로 그 장소(겹쳤으면 묶음 전체)의 id를 넘긴다 (D-042)
- * - 원: 대표 색(마지막 도착의 오늘의 색) 불투명도 0.6, 외곽선 없음 — 겹치면 짙어진다. 누른 원은 테두리 3 dp
+ * - 원: 대표 색(마지막 도착의 오늘의 색)을 짙게 채우고 같은 색상각의 가장자리 선([MapInk], D-090). 누른 원은 테두리 3 dp
  * - 오늘 도착한 원만 테두리가 한 번 퍼졌다 사라진다(1.2초, [playRing]). 반복 없음
  * - [compact]: 목록 옆 작은 지도(내비 옆 분할). 누르지 않는다
  */
@@ -40,6 +40,7 @@ class KoreaMapView(context: Context) : View(context) {
     private val land = Paint(Paint.ANTI_ALIAS_FLAG)
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val mapPath = Path()
     private val m = Matrix()
     private var fit = MapGeo.Fit(0f, 0f, 0f)
@@ -107,16 +108,21 @@ class KoreaMapView(context: Context) : View(context) {
         land.color = t.mapLand
         canvas.drawPath(mapPath, land)
         val byId = dots.associateBy { it.id }
+        // 채움은 짙게(0.85), 가장자리는 같은 색상각의 진한(밤은 밝은) 선 — 밝은 색 원도 바탕과 갈리고 겹친 원의 경계가 보인다 (D-090)
+        edge.strokeWidth = (if (compact) 1.2f else 2f) * density
         for (c in circles) {
-            fill.color = ColorUtils.setAlphaComponent(byId.getValue(c.id).color, 0x99) // 0.6
+            val ink = MapInk.of(byId.getValue(c.id).color, t.night)
+            fill.color = ink.fill
             canvas.drawCircle(c.cx, c.cy, c.r, fill)
+            edge.color = ink.edge
+            canvas.drawCircle(c.cx, c.cy, c.r - edge.strokeWidth / 2f, edge)
         }
         ring.strokeWidth = (if (compact) 2f else 3f) * density
         ring.color = t.mapSelect
         for (c in circles) if (c.id in selected) canvas.drawCircle(c.cx, c.cy, c.r, ring)
         val rid = ringId
         if (rid != null && ringT >= 0f) circles.find { it.id == rid }?.let { c ->
-            ring.color = ColorUtils.setAlphaComponent(byId.getValue(c.id).color, (0xCC * (1f - ringT)).toInt())
+            ring.color = ColorUtils.setAlphaComponent(MapInk.of(byId.getValue(c.id).color, t.night).edge, (0xFF * (1f - ringT)).toInt())
             canvas.drawCircle(c.cx, c.cy, c.r + RING_GROW_DP * density * ringT, ring)
         }
     }
