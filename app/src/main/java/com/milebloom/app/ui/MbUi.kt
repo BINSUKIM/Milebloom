@@ -39,6 +39,10 @@ class UiTone(val night: Boolean, val season: Season) {
         if (night) p.getValue(Tone.MEMORY_NIGHT).let { ColorUtils.blendARGB(it.skyTop, it.cloud, 0.3f) }
         else p.getValue(Tone.MEMORY_DAY).cloud
     }
+    /** 확정 버튼(확인·저장·지우기) — 글자색으로 채우고 판 색 글자. 나머지 버튼(회색 알약)과 위계를 가른다 (5-I) */
+    val primary: Int get() = text
+    val onPrimary: Int get() = panel
+
     /** 판 위 구분선 */
     val rule: Int = ColorUtils.setAlphaComponent(sub, 0x40)
 
@@ -123,37 +127,4 @@ object MbUi {
     }
 
     fun gone(vararg v: View) = v.forEach { it.visibility = View.GONE }
-}
-
-/**
- * 글자 뒤 받침 — 테두리 없는 타원형 번짐 (D-084). 버튼(단색 알약)과 모양이 달라 눌리는 것으로 읽히지 않는다.
- * 가운데는 [color]의 [alpha], 가장자리로 갈수록 투명해진다.
- */
-class GlowDrawable(private val color: Int, private val alpha: Int) : android.graphics.drawable.Drawable() {
-    private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
-    private var key = 0L
-
-    override fun draw(canvas: android.graphics.Canvas) {
-        val b = bounds
-        if (b.isEmpty) return
-        val h = b.height().toFloat()
-        val k = b.width().toLong() shl 32 or b.height().toLong()
-        if (k != key) {
-            key = k
-            val c = ColorUtils.setAlphaComponent(color, alpha)
-            paint.shader = android.graphics.RadialGradient(0f, 0f, h / 2f,
-                intArrayOf(c, c, ColorUtils.setAlphaComponent(color, 0)), floatArrayOf(0f, 0.55f, 1f),
-                android.graphics.Shader.TileMode.CLAMP)
-        }
-        canvas.save()
-        canvas.translate(b.exactCenterX(), b.exactCenterY())
-        canvas.scale(b.width() / h, 1f)
-        canvas.drawCircle(0f, 0f, h / 2f, paint)
-        canvas.restore()
-    }
-
-    override fun setAlpha(a: Int) = Unit
-    override fun setColorFilter(cf: android.graphics.ColorFilter?) = Unit
-    @Deprecated("Deprecated in Java")
-    override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT
 }

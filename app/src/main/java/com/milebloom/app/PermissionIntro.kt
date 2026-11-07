@@ -146,7 +146,7 @@ class PermissionIntro(private val activity: Activity, root: FrameLayout) {
             background = MbUi.rounded(tone.card(null), dp(c, 20).toFloat())
         }
         card.addView(notice, lp(top = 32))
-        card.addView(MbUi.text(c, 24f, tone.sub, s = "허용하지 않아도 앱은 쓸 수 있습니다.\n설정에서 언제든 다시 켤 수 있습니다."), lp(top = 20))
+        card.addView(MbUi.text(c, 24f, tone.sub, s = "허용하지 않아도 앱은 쓸 수 있습니다.\n앱 설정에서 한 번 더 물을 수 있습니다."), lp(top = 20))
         buttons(
             MbUi.pill(c, "계속", tone.text, tone.panel, bold = true) {
                 val m = missing()
@@ -165,7 +165,7 @@ class PermissionIntro(private val activity: Activity, root: FrameLayout) {
             if (SPEED_PERMISSION in m) add("차가 서도 풍경이 계속 흐릅니다.")
         }
         card.addView(MbUi.text(c, 28f, tone.text, s = lines.joinToString("\n")), lp(top = 28))
-        card.addView(MbUi.text(c, 24f, tone.sub, s = "설정 › 위치·속도 권한에서 다시 켤 수 있습니다."), lp(top = 20))
+        card.addView(MbUi.text(c, 24f, tone.sub, s = "앱 설정 › 위치·속도 권한에서 한 번 더 물을 수 있습니다."), lp(top = 20))
         buttons(MbUi.pill(c, "확인", tone.text, tone.panel, bold = true) { close() })
     }
 

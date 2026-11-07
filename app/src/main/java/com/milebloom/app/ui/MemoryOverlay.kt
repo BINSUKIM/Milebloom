@@ -327,10 +327,12 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         greeting.text = greetingText ?: ArrivalGreeting.BOARDING
         // 풀밭 위에 글자만 얹으면 어색하다는 사용자 판단으로 받침을 둔다 (D-084, 30번 6.4 '판 없음'을 바꿈).
         // 버튼과 같은 알약이면 글자가 버튼처럼 보인다(사용자 지적) → 테두리 없는 타원형 번짐으로 구분한다
-        val padH = dp(c, 120); val padV = dp(c, 36)
-        greeting.setPadding(padH, padV, padH, padV)
-        greeting.background = GlowDrawable(tone.panel, if (tone.night) 0xD0 else 0xC8)
-        greeting.setShadowLayer(0f, 0f, 0f, 0)
+        // 인사 뒤 받침 없음 (D-091, D-084의 번짐을 바꿈). 글자 자리 풀은 풍경이 비우므로([onHomeBounds]) 글자는 맨 땅 위에 놓인다 —
+        // 땅 대비 낮 6.3:1 이상·밤 8.4:1 이상(계절 4종). 판 색 후광은 남은 꽃잎·그림자 끝에서 글자 윤곽만 지킨다.
+        // 화면에서 바탕이 칠해진 것은 버튼뿐이라 '읽는 것'과 '누르는 것'이 갈린다
+        greeting.background = null
+        greeting.setPadding(dp(c, 24), dp(c, 16), dp(c, 24), dp(c, 16))
+        greeting.setShadowLayer(dp(c, 10).toFloat(), 0f, 0f, ColorUtils.setAlphaComponent(tone.panel, 0xF0))
         buttonRow.removeAllViews()
         val unconfirmed = deps.records.unconfirmedCount
         val voiceLabel = if (unconfirmed > 0) "음성 기록 · 확인 전 $unconfirmed" else "음성 기록"
@@ -474,8 +476,8 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         val memos = r.memosNewestFirst()
         if (memos.isEmpty()) {
             rule()
-            page.addView(MbUi.text(c, 28f, tone.text, s = "아직 남긴 말이 없습니다."), lp(top = 32))
-            page.addView(MbUi.text(c, 24f, tone.sub, s = "주행 중에 오른쪽 아래 마이크 버튼을 한 번 누르고 말하면, 받아쓴 글이 그 주행의 도착지에 묶여 여기에 남습니다."), lp(top = 12))
+            page.addView(MbUi.text(c, 28f, tone.text, s = "아직 남긴 말이 없어요."), lp(top = 32))
+            page.addView(MbUi.text(c, 24f, tone.sub, s = "주행 중에 오른쪽 아래 마이크 버튼을 한 번 누르고 말하면, 받아쓴 글이 그 주행의 도착지에 묶여 여기에 남아요."), lp(top = 12))
             return
         }
         memos.forEach { m ->
@@ -540,7 +542,8 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         }
         val actions = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
         fun action(label: String, bold: Boolean = false, onClick: () -> Unit) {
-            val b = MbUi.pill(c, label, tone.panel, tone.text, bold = bold, heightDp = MbUi.SMALL_PILL_H, sp = 26f, onClick = onClick)
+            // bold = 확정 버튼(확인·저장·지우기)
+            val b = MbUi.pill(c, label, if (bold) tone.primary else tone.panel, if (bold) tone.onPrimary else tone.text, bold = bold, heightDp = MbUi.SMALL_PILL_H, sp = 26f, onClick = onClick)
             b.minWidth = dp(c, 120)
             actions.addView(b, LinearLayout.LayoutParams(-2, dp(c, MbUi.SMALL_PILL_H)).apply { if (actions.childCount > 0) marginStart = dp(c, 14) })
         }
@@ -673,14 +676,25 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         val r = deps.records
         val outside = r.parkPoints.count { !MapGeo.inRange(it.lat, it.lon) }
         val note = when {
-            r.parkPoints.isEmpty() && !deps.keepParkPoints -> "설정의 '주차한 곳 남기기'가 꺼져 있어 원이 생기지 않습니다."
-            r.parkPoints.isEmpty() -> "아직 차를 세운 곳이 없어요. 기어를 P에 놓으면 그 자리에 원이 하나 남아요."
+            r.parkPoints.isEmpty() && !deps.keepParkPoints -> "설정의 '주차한 곳 남기기'가 꺼져 있어 원이 생기지 않아요."
+            r.parkPoints.isEmpty() && deps.missingPermissions().any { it.contains("FUSED_LOCATION") } ->
+                "위치 권한이 꺼져 있어 원이 생기지 않아요. 설정 › 위치·속도 권한에서 다시 물을 수 있어요."
+            // 앱을 켠 주행만 기록된다 (D-046)
+            r.parkPoints.isEmpty() -> "아직 차를 세운 곳이 없어요. 앱을 켠 채 달린 뒤 기어를 P에 놓으면 그 자리에 원이 하나 남아요."
             outside > 0 -> "지도 범위 밖에 세운 곳 ${outside}곳은 원으로 그리지 않았어요. 장소 목록에는 있어요."
             else -> null
         }
         if (isWide()) {
             backTo(prevLabel())
             title("전국 지도", "차를 세운 곳에 원이 하나씩 남아요")
+            if (r.parkPoints.isEmpty()) {
+                // 원이 없을 때는 원 읽는 법 대신 왜 없는지만 (5-I)
+                if (note != null) page.addView(MbUi.text(c, 28f, tone.text, s = note), lp(top = 40))
+                val row = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
+                smallPill(row, "음성 기록 전체") { push(Page.VoiceList) }
+                page.addView(row, lp(top = 48))
+                return
+            }
             val legend = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
             legend.addView(View(c).apply { background = MbUi.rounded(tone.dot(r.journeys.lastOrNull { it.colorArgb != null }?.colorArgb), dp(c, 20).toFloat()) },
                 LinearLayout.LayoutParams(dp(c, 40), dp(c, 40)).apply { marginEnd = dp(c, 20) })
@@ -710,7 +724,8 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         page.addView(placeInline(compact = false), LinearLayout.LayoutParams(-1, maxOf(dp(c, 300), avail - used)).apply { topMargin = dp(c, 16) })
         maybeRing(inlineMap)
         val foot = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        foot.addView(MbUi.text(c, 24f, tone.sub, s = "원을 눌러 그곳의\n기록을 보세요"), LinearLayout.LayoutParams(0, -2, 1f))
+        // 원이 없으면 누르는 법 대신 빈자리만 둔다 — 이유는 위 안내(note)가 말한다 (5-I)
+        foot.addView(MbUi.text(c, 24f, tone.sub, s = if (r.parkPoints.isEmpty()) "" else "원을 눌러 그곳의\n기록을 보세요"), LinearLayout.LayoutParams(0, -2, 1f))
         if (r.parkPoints.isNotEmpty()) smallPill(foot, "장소 목록") { push(Page.Cluster(r.parkPoints.map { it.id }, all = true)) }
         smallPill(foot, "음성 기록 전체") { push(Page.VoiceList) }
         page.addView(foot, lp(top = 16))
@@ -718,7 +733,9 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
 
     private fun smallPill(row: LinearLayout, label: String, bold: Boolean = false, onCard: Boolean = false, onClick: () -> Unit): TextView {
         // 카드 안의 버튼은 판 색으로 — 카드와 같은 색이면 버튼이 보이지 않는다
-        val b = MbUi.pill(c, label, if (onCard) tone.panel else tone.card(null), tone.text, bold = bold, heightDp = MbUi.SMALL_PILL_H, sp = 26f, onClick = onClick)
+        // bold = 확정 버튼(저장·지우기) — 글자색으로 채운다
+        val fill = if (bold) tone.primary else if (onCard) tone.panel else tone.card(null)
+        val b = MbUi.pill(c, label, fill, if (bold) tone.onPrimary else tone.text, bold = bold, heightDp = MbUi.SMALL_PILL_H, sp = 26f, onClick = onClick)
         b.minWidth = dp(c, 120)
         b.setPadding(dp(c, 30), 0, dp(c, 30), 0)
         row.addView(b, LinearLayout.LayoutParams(-2, dp(c, MbUi.SMALL_PILL_H)).apply { if (row.childCount > 0) marginStart = dp(c, 14) })
@@ -747,7 +764,7 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         else title("이 근처 ${places.size}곳", "원이 겹쳐 있어요. 장소를 고르세요")
         if (places.isEmpty()) {
             rule()
-            page.addView(MbUi.text(c, 28f, tone.text, s = "남은 장소가 없습니다."), lp(top = 32))
+            page.addView(MbUi.text(c, 28f, tone.text, s = "남은 장소가 없어요."), lp(top = 32))
             return
         }
         places.forEach { pt ->
@@ -804,24 +821,26 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         val recent = visits.take(RECENT_VISITS)
         page.addView(MbUi.text(c, 28f, tone.text, bold = true, s = "최근 방문 ${recent.size}회"), lp(top = 44))
         if (recent.isEmpty()) {
-            page.addView(MbUi.text(c, 24f, tone.sub, s = "남은 방문 기록이 없습니다."), lp(top = 12))
+            page.addView(MbUi.text(c, 24f, tone.sub, s = "남은 방문 기록이 없어요."), lp(top = 12))
             return
         }
         // 두 줄씩 — 날짜를 누르면 그날 (P07의 격자)
         recent.chunked(2).forEach { pair ->
             val line = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
             pair.forEach { j ->
-                val cell = MbUi.text(c, 26f, tone.sub, s = dateOf(j.endedAt!!)).apply {
+                // 누를 수 있는 칸임이 보이게 칩 모양으로 (5-I: 글자만 있으면 눌리는지 알 수 없었다)
+                val cell = MbUi.text(c, 26f, tone.text, s = dateOf(j.endedAt!!) + "  ›").apply {
                     gravity = Gravity.CENTER_VERTICAL
                     minHeight = dp(c, MbUi.SMALL_PILL_H)
-                    background = MbUi.rounded(0x00000000, dp(c, 12).toFloat(), tone.text)
+                    setPadding(dp(c, 24), 0, dp(c, 16), 0)
+                    background = MbUi.rounded(tone.card(j.colorArgb), dp(c, 18).toFloat(), tone.text)
                     isClickable = true
                     setOnClickListener { push(Page.Day(j.id)) }
                 }
-                line.addView(cell, LinearLayout.LayoutParams(0, -2, 1f))
+                line.addView(cell, LinearLayout.LayoutParams(0, -2, 1f).apply { if (line.childCount > 0) marginStart = dp(c, 14) })
             }
-            if (pair.size == 1) line.addView(View(c), LinearLayout.LayoutParams(0, 1, 1f))
-            page.addView(line, LinearLayout.LayoutParams(-1, -2))
+            if (pair.size == 1) line.addView(View(c), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(c, 14) })
+            page.addView(line, lp(top = 14))
         }
         if (visits.size > RECENT_VISITS) page.addView(MbUi.text(c, 24f, tone.sub, s = "그보다 오래된 방문 ${visits.size - RECENT_VISITS}회는 음성 기록이 있던 날만 위에 남겨 둡니다."), lp(top = 12))
     }
@@ -911,27 +930,27 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         settingRow(
             "실내 조명 연동",
             "도착하면 조명 색을 오늘의 색으로 한 번 바꿉니다. 스위치와 밝기는 그대로 둡니다.",
-            if (deps.ambientLink) "켜짐" else "꺼짐", bold = deps.ambientLink,
+            toggle = deps.ambientLink,
         ) { deps.ambientLink = !deps.ambientLink; render() }
 
         settingRow(
             "주차한 곳 남기기",
             "차를 세운 곳 한 점만 남깁니다. 지나온 길은 남기지 않습니다.",
-            if (deps.keepParkPoints) "켜짐" else "꺼짐", bold = deps.keepParkPoints,
+            toggle = deps.keepParkPoints,
         ) { deps.keepParkPoints = !deps.keepParkPoints; render() }
 
         val missing = deps.missingPermissions()
         if (missing.isEmpty()) {
-            settingRow("위치·속도 권한", "허용됨", null) {}
+            settingRow("위치·속도 권한", "허용됨") {}
         } else {
             val effects = buildList {
                 if (missing.any { it.contains("FUSED_LOCATION") }) add("주차한 곳이 남지 않습니다.")
                 if (missing.any { it.contains("CAR_SPEED") }) add("차가 서도 풍경이 계속 흐릅니다.")
             }.joinToString(" ")
             if (!askedOnce) {
-                settingRow("위치·속도 권한", "꺼져 있습니다. $effects", "다시 묻기", bold = true) { deps.askPermissions() }
+                settingRow("위치·속도 권한", "꺼져 있습니다. $effects", "다시 묻기", primary = true) { deps.askPermissions() }
             } else {
-                settingRow("위치·속도 권한", "꺼져 있습니다. 권한 창이 뜨지 않으면 시스템 설정 › 앱 › Milebloom › 권한에서 켜 주세요.", "시스템 설정", bold = true) {
+                settingRow("위치·속도 권한", "꺼져 있습니다. 권한 창이 더 뜨지 않으면 시스템 설정의 Milebloom 화면을 열어 확인해 주세요.", "시스템 설정", primary = true) {
                     if (!deps.openSystemSettings()) deps.askPermissions()
                 }
             }
@@ -939,22 +958,26 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
 
         settingRow("음성 기록", "${r.memos.size}개 · 소리는 저장하지 않습니다", "보기") { push(Page.VoiceList) }
 
-        if (!clearing) {
+        if (r.parkPoints.isEmpty() && r.memos.isEmpty()) {
+            clearing = false
+            settingRow("기록 모두 지우기", "지울 주차한 곳과 음성 기록이 없습니다.") {}
+        } else if (!clearing) {
             settingRow("기록 모두 지우기", "주차한 곳과 음성 기록을 모두 지웁니다. 풍경은 남습니다.", "지우기") { clearing = true; render() }
         } else {
+            // 다른 지우기 확인(음성 기록·장소)과 같은 카드 모양 (5-I)
             rule(top = 0)
-            page.addView(MbUi.text(c, 28f, tone.text, bold = true, s = "기록 모두 지우기"), lp(top = 28))
-            page.addView(MbUi.text(c, 24f, tone.text, s = "주차한 곳 ${r.parkPoints.size}곳과 음성 기록 ${r.memos.size}개를 지웁니다. 되돌릴 수 없습니다. 풍경은 그대로 남습니다."), lp(top = 8))
-            val row = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
-            listOf("모두 지우기" to true, "취소" to false).forEach { (label, yes) ->
-                val b = MbUi.pill(c, label, tone.card(null), tone.text, bold = yes, heightDp = MbUi.SMALL_PILL_H, sp = 26f) {
-                    clearing = false
-                    if (yes) deps.clearAll() else render()
-                }
-                b.minWidth = dp(c, 140)
-                row.addView(b, LinearLayout.LayoutParams(-2, dp(c, MbUi.SMALL_PILL_H)).apply { if (row.childCount > 0) marginStart = dp(c, 14) })
+            val card = LinearLayout(c).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(c, 28), dp(c, 28), dp(c, 28), dp(c, 24))
+                background = MbUi.rounded(tone.card(null), dp(c, 24).toFloat())
             }
-            page.addView(row, lp(top = 20))
+            card.addView(MbUi.text(c, 28f, tone.text, bold = true, s = "기록을 모두 지웁니다."))
+            card.addView(MbUi.text(c, 24f, tone.text, s = "주차한 곳 ${r.parkPoints.size}곳과 음성 기록 ${r.memos.size}개가 사라집니다. 풍경은 그대로 남습니다. 되돌릴 수 없습니다."), lp(top = 10))
+            val row = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
+            smallPill(row, "모두 지우기", bold = true, onCard = true) { clearing = false; deps.clearAll() }
+            smallPill(row, "취소", onCard = true) { clearing = false; render() }
+            card.addView(row, lp(top = 20))
+            page.addView(card, lp(top = 24))
             page.addView(View(c), LinearLayout.LayoutParams(-1, dp(c, 28)))
         }
         rule(top = 0)
@@ -962,7 +985,11 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         page.addView(MbUi.text(c, 24f, tone.sub, s = "글꼴 Pretendard · SIL Open Font License 1.1"), lp(top = 16))
     }
 
-    private fun settingRow(label: String, body: String, action: String?, bold: Boolean = false, onClick: () -> Unit) {
+    /**
+     * 설정 한 줄. [toggle]이 있으면 켜짐/꺼짐 상태 버튼 — 켜짐은 점과 함께 굵게, 꺼짐은 옅게(5-I: 상태와 동작이 같은 모양이라 지금 켜져 있는지 헷갈렸다).
+     * [primary]는 확정 버튼 색. 버튼 폭은 모두 같게 해 오른쪽 끝과 왼쪽 끝을 맞춘다
+     */
+    private fun settingRow(label: String, body: String, action: String? = null, primary: Boolean = false, toggle: Boolean? = null, onClick: () -> Unit) {
         rule(top = 0)
         val row = LinearLayout(c).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -973,9 +1000,13 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         col.addView(MbUi.text(c, 28f, tone.text, bold = true, s = label))
         col.addView(MbUi.text(c, 24f, tone.sub, s = body), lp(top = 8))
         row.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
-        if (action != null) {
-            val b = MbUi.pill(c, action, tone.card(null), tone.text, bold = bold, heightDp = MbUi.SMALL_PILL_H, sp = 26f, onClick = onClick)
-            b.minWidth = dp(c, 140)
+        val text = toggle?.let { if (it) "●  켜짐" else "꺼짐" } ?: action
+        if (text != null) {
+            val fill = if (primary) tone.primary else tone.card(null)
+            val fg = when { primary -> tone.onPrimary; toggle == false -> tone.sub; else -> tone.text }
+            val b = MbUi.pill(c, text, fill, fg, bold = primary || toggle == true, heightDp = MbUi.SMALL_PILL_H, sp = 26f, onClick = onClick)
+            b.minWidth = dp(c, SETTING_BTN_W)
+            b.setPadding(dp(c, 24), 0, dp(c, 24), 0)
             row.addView(b, LinearLayout.LayoutParams(-2, dp(c, MbUi.SMALL_PILL_H)).apply { marginStart = dp(c, 24) })
         }
         page.addView(row, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -1011,5 +1042,7 @@ class MemoryOverlay(private val activity: Activity, root: FrameLayout, private v
         const val PENDING_ARRIVAL_MS = 3_000L
         /** 장소의 방문 기록에 보이는 최근 방문 수 (D-042) */
         const val RECENT_VISITS = 10
+        /** 설정 줄 버튼 폭 — "시스템 설정"이 들어가는 폭 */
+        const val SETTING_BTN_W = 176
     }
 }
