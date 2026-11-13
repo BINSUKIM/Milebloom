@@ -87,6 +87,15 @@ export ANDROID_HOME="$HOME/Library/Android/sdk"
 
 확인에 쓴 환경은 Apple Silicon Mac, `Pleos_Connect_v2.1.0` AVD(API 34, arm64-v8a)입니다.
 
+| 항목 | 값 |
+|---|---|
+| 에뮬레이터 버전 | Pleos Connect Emulator v2.1.0 (빌드 `RELEASE.release_connect_v2.1.0`, Android 14) |
+| 화면 규격 | 2560 × 1440 px, 160 dpi (1 dp = 1 px) |
+| 앱 창 — 단독 실행 | 1682 × 1210 dp (왼쪽 차량 패널과 오른쪽 손잡이 띠를 뺀 크기) |
+| 앱 창 — 내비 옆 분할 | 841 × 1210 dp (내비와 정확히 반반) |
+
+앱 창 크기는 `adb shell dumpsys window windows`의 창 경계로 잰 값입니다.
+
 앱은 에뮬레이터의 **user 10**으로 돕니다. `pm` 명령과 브로드캐스트에는 `--user 10`을 붙여야 합니다.
 
 ## Virtual Console 시연 절차
